@@ -17,5 +17,8 @@ func (d *Dialector) QuoteTo(writer clause.Writer, str string) {
 
 // DataTypeOf dispatches column type mapping to the pinned mode.
 func (d *Dialector) DataTypeOf(field *schema.Field) string {
+	if d.mode() == ob.ModeOracle {
+		return oracleDataTypeOf(d, field)
+	}
 	return mysqlDataTypeOf(d, field)
 }

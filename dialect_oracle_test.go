@@ -6,11 +6,14 @@ import (
 	"database/sql/driver"
 	"errors"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
 	ob "github.com/cocosip/go-oceanbase"
+	obtypes "github.com/cocosip/go-oceanbase/types"
 	"gorm.io/gorm"
+	"gorm.io/gorm/schema"
 )
 
 // openOracleWithFakeDB boots a MySQL-free Oracle-mode gorm.DB against the fake
@@ -197,8 +200,7 @@ func TestOracleDryRunQuoting(t *testing.T) {
 	}
 }
 
-func TestOracleScanMapsUppercaseColumns(t *testing.T) {
-	pool := newFakePool(t)
+func TestOracleScanMapsUppercaseColumns(t *testing.T) {	pool := newFakePool(t)
 	pool.server.reply("SELECT ob_version() FROM dual", testOBCEVersion)
 
 	type oracleRow struct {
@@ -220,5 +222,76 @@ func TestOracleScanMapsUppercaseColumns(t *testing.T) {
 	}
 	if len(rows) != 1 || rows[0].Name != testUserName {
 		t.Fatalf("scan result = %+v, want one row named alice", rows)
+	}
+}
+
+func TestOracleDataTypeOf(t *testing.T) {
+	d := dialectorWithMode(t, ob.ModeOracle)
+
+	cases := []struct {
+		name  string
+		field schema.Field
+		want  string
+	}{
+		{name: "bool", field: schema.Field{DataType: schema.Bool}, want: "NUMBER(1)"},
+		{name: "int8", field: schema.Field{DataType: schema.Int, Size: 8}, want: "NUMBER(3,0)"},
+		{name: "int16", field: schema.Field{DataType: schema.Int, Size: 16}, want: "NUMBER(5,0)"},
+		{name: "int32", field: schema.Field{DataType: schema.Int, Size: 32}, want: "NUMBER(10,0)"},
+		{name: "int64", field: schema.Field{DataType: schema.Int, Size: 64}, want: "NUMBER(19,0)"},
+		{name: "uint64", field: schema.Field{DataType: schema.Uint, Size: 64}, want: "NUMBER(20,0)"},
+		{name: "uint32", field: schema.Field{DataType: schema.Uint, Size: 32}, want: "NUMBER(10,0)"},
+		{name: "binary float", field: schema.Field{DataType: schema.Float, Size: 32}, want: "BINARY_FLOAT"},
+		{name: "binary double", field: schema.Field{DataType: schema.Float, Size: 64}, want: "BINARY_DOUBLE"},
+		{name: "number", field: schema.Field{DataType: schema.Float, Precision: 10, Scale: 2}, want: "NUMBER(10,2)"},
+		{name: "default string", field: schema.Field{DataType: schema.String}, want: "VARCHAR2(512)"},
+		{name: "sized string", field: schema.Field{DataType: schema.String, Size: 100}, want: "VARCHAR2(100)"},
+		{name: "varchar2 boundary", field: schema.Field{DataType: schema.String, Size: 4000}, want: "VARCHAR2(4000)"},
+		{name: "clob", field: schema.Field{DataType: schema.String, Size: 4001}, want: "CLOB"},
+		{name: "timestamp default", field: schema.Field{DataType: schema.Time}, want: "TIMESTAMP(6)"},
+		{name: "timestamp precision", field: schema.Field{DataType: schema.Time, Precision: 3}, want: "TIMESTAMP(3)"},
+		{name: "raw", field: schema.Field{DataType: schema.Bytes, Size: 100}, want: "RAW(100)"},
+		{name: "raw boundary", field: schema.Field{DataType: schema.Bytes, Size: 2000}, want: "RAW(2000)"},
+		{name: "blob oversize", field: schema.Field{DataType: schema.Bytes, Size: 2001}, want: "BLOB"},
+		{name: "blob unsized", field: schema.Field{DataType: schema.Bytes}, want: "BLOB"},
+		{name: "custom tag passthrough", field: schema.Field{DataType: schema.DataType(testObjectTypeName)}, want: testObjectTypeName},
+		{name: "timezone tag passthrough", field: schema.Field{DataType: "TIMESTAMP WITH TIME ZONE"}, want: "TIMESTAMP WITH TIME ZONE"},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := d.DataTypeOf(&tc.field); got != tc.want {
+				t.Fatalf("DataTypeOf() = %q, want %q", got, tc.want)
+			}
+		})
+	}
+}
+
+func TestOracleDataTypeOfDefaultStringSize(t *testing.T) {
+	d := &Dialector{Config: &Config{resolvedMode: ob.ModeOracle, DefaultStringSize: 255}}
+	if got := d.DataTypeOf(&schema.Field{DataType: schema.String}); got != "VARCHAR2(255)" {
+		t.Fatalf("DataTypeOf() = %q, want VARCHAR2(255)", got)
+	}
+}
+
+func TestOracleComplexTypeNeedsTag(t *testing.T) {
+	type complexHolder struct {
+		ID     uint64
+		Plain  obtypes.Object
+		Tagged obtypes.Object `gorm:"type:MY_OBJECT_T"`
+	}
+
+	parsed, err := schema.Parse(&complexHolder{}, &sync.Map{}, schema.NamingStrategy{})
+	if err != nil {
+		t.Fatalf("schema.Parse: %v", err)
+	}
+	d := dialectorWithMode(t, ob.ModeOracle)
+
+	// Without a tag the driver Object type falls back to GORM's string
+	// inference; the dialect must not fabricate a server type from the Go type.
+	if got := d.DataTypeOf(parsed.FieldsByDBName["plain"]); got != "VARCHAR2(512)" {
+		t.Fatalf("untagged Object DataTypeOf() = %q, want VARCHAR2(512)", got)
+	}
+	if got := d.DataTypeOf(parsed.FieldsByDBName["tagged"]); got != testObjectTypeName {
+		t.Fatalf("tagged Object DataTypeOf() = %q, want %s", got, testObjectTypeName)
 	}
 }

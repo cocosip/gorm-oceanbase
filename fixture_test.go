@@ -17,4 +17,7 @@ const (
 	testExplicitVersion = "4.2.1.0"
 	// testUserName is the shared sample user name for CRUD tests.
 	testUserName = "alice"
+	// testObjectTypeName is a named Oracle compatibility server type used in
+	// complex-type tag tests.
+	testObjectTypeName = "MY_OBJECT_T"
 )
