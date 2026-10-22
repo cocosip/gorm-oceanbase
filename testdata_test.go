@@ -20,6 +20,8 @@ type fakeServer struct {
 	replies    map[string]fakeReply
 	execErrors map[string]error
 	txLog      []string
+	outSeed    int64
+	outNext    int64
 	pingErr    error
 }
 
@@ -79,6 +81,23 @@ func (f *fakeServer) logTx(event string) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	f.txLog = append(f.txLog, event)
+}
+
+// seedOut fixes the next value a RETURNING INTO out parameter receives; the
+// fake server increments it per out parameter, like an IDENTITY column.
+func (f *fakeServer) seedOut(seed int64) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.outSeed = seed
+	f.outNext = seed
+}
+
+func (f *fakeServer) nextOutValue() int64 {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	value := f.outNext
+	f.outNext++
+	return value
 }
 
 func (f *fakeServer) replyError(query string, err error) {
@@ -183,6 +202,25 @@ func (c *fakeConn) Ping(context.Context) error {
 	c.server.mu.Lock()
 	defer c.server.mu.Unlock()
 	return c.server.pingErr
+}
+
+// CheckNamedValue accepts sql.Out arguments, simulating the server writing a
+// generated key into Dest, and defers everything else to the default
+// converter. The real OceanBase driver supports out parameters the same way.
+func (c *fakeConn) CheckNamedValue(nv *driver.NamedValue) error {
+	out, ok := nv.Value.(sql.Out)
+	if !ok {
+		return driver.ErrSkip
+	}
+	switch dest := out.Dest.(type) {
+	case *int64:
+		*dest = c.server.nextOutValue()
+	case *uint64:
+		*dest = uint64(c.server.nextOutValue())
+	default:
+		return fmt.Errorf("fakeConn: unsupported Out dest %T", out.Dest)
+	}
+	return nil
 }
 
 // fakeTx records commit and rollback boundaries.

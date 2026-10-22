@@ -26,4 +26,7 @@ const (
 	testColumnRating = "rating"
 	// testUpdatedTitle is the upserted title value.
 	testUpdatedTitle = "new"
+	// oracleReturningTitleSQL is the generated-key INSERT RETURNING statement
+	// for a single title column on the oracle articles table.
+	oracleReturningTitleSQL = `INSERT INTO "ORACLE_ARTICLES" ("TITLE") VALUES (?) RETURNING "ID" INTO ?`
 )

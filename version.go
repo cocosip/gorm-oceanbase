@@ -92,3 +92,20 @@ func mysqlCapabilities() capabilities {
 		dontSupportDropConstraint: true,
 	}
 }
+
+// oracleIdentityMinVersion is the candidate minimum OceanBase version for
+// GENERATED ... AS IDENTITY support. The threshold still awaits real-tenant
+// verification (design.md §6.1); unknown versions keep IDENTITY disabled, and
+// the Oracle migrator refuses the DDL before executing it.
+var oracleIdentityMinVersion = serverVersion{major: 4, minor: 2, patch: 1, valid: true}
+
+// oracleIdentitySupported reports whether IDENTITY DDL may run for the
+// dialector's server version. Unknown or lower versions return false so the
+// caller can reject before executing any DDL.
+func (d *Dialector) oracleIdentitySupported() bool {
+	return parseOBVersion(d.ServerVersion).atLeast(
+		oracleIdentityMinVersion.major,
+		oracleIdentityMinVersion.minor,
+		oracleIdentityMinVersion.patch,
+	)
+}

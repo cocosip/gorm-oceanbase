@@ -3,6 +3,7 @@ package oceanbase
 import (
 	"database/sql"
 	"fmt"
+	"reflect"
 	"strings"
 
 	"gorm.io/gorm"
@@ -76,7 +77,9 @@ func hasOracleOnConflict(stmt *gorm.Statement) bool {
 }
 
 // buildOraclePlainInserts converts the create values into INSERT / INSERT ALL
-// statements for the batches without an upsert clause.
+// statements for the batches without an upsert clause. Rows omitting the
+// single auto-generated primary key run as INSERT RETURNING statements, one
+// per row, so the generated keys are fetched and written back (design.md §6).
 func buildOraclePlainInserts(db *gorm.DB) []oracleInsertSQL {
 	stmt := db.Statement
 	values := callbacks.ConvertToCreateValues(stmt)
@@ -99,9 +102,17 @@ func buildOraclePlainInserts(db *gorm.DB) []oracleInsertSQL {
 		}
 	}
 
+	pkField := oracleGeneratedPKField(stmt)
+	ins := oracleInsertClause(stmt)
 	built := make([]oracleInsertSQL, 0, len(groups))
 	for _, g := range groups {
-		ins := oracleInsertClause(stmt)
+		if pkField != nil && !oracleRowHasColumn(g.columns, pkField.DBName) {
+			// Generated keys are fetched row by row; never batched.
+			for i, rowValues := range g.rows {
+				built = append(built, buildOracleInsertReturning(stmt, ins, pkField, g.columns, rowValues, g.sourceRows[i]))
+			}
+			continue
+		}
 		stmt.SQL = strings.Builder{}
 		stmt.Vars = make([]interface{}, 0, len(g.columns)*len(g.rows))
 		writeOracleInsert(stmt, ins, g)
@@ -123,12 +134,39 @@ func oracleInsertClause(stmt *gorm.Statement) clause.Insert {
 	return clause.Insert{}
 }
 
+// oracleGeneratedPKField returns the single auto-generated, readable integer
+// primary key of the schema, or nil when the model does not have exactly one.
+func oracleGeneratedPKField(stmt *gorm.Statement) *schema.Field {
+	if stmt.Schema == nil || len(stmt.Schema.PrimaryFields) != 1 {
+		return nil
+	}
+	pk := stmt.Schema.PrioritizedPrimaryField
+	if pk == nil || !pk.HasDefaultValue || !pk.Readable {
+		return nil
+	}
+	switch pk.DataType {
+	case schema.Int, schema.Uint:
+		return pk
+	default:
+		return nil
+	}
+}
+
+// oraclePKBackfill carries the out-parameter binding of one INSERT RETURNING
+// statement back to the model field it fills.
+type oraclePKBackfill struct {
+	field     *schema.Field
+	sourceRow int
+	dest      interface{}
+}
+
 // oracleUpsertRow is one row of an upsert batch with its effective column set
 // and the primary-key branching decision.
 type oracleUpsertRow struct {
-	columns  []clause.Column
-	values   []interface{}
-	generate bool
+	columns   []clause.Column
+	values    []interface{}
+	generate  bool
+	sourceRow int
 }
 
 // buildOracleUpserts validates the whole upsert batch, then builds one MERGE
@@ -160,8 +198,8 @@ func buildOracleUpserts(db *gorm.DB) []oracleInsertSQL {
 	}
 
 	rows := make([]oracleUpsertRow, 0, len(values.Values))
-	for _, row := range values.Values {
-		upsertRow := oracleUpsertRow{}
+	for rowIdx, row := range values.Values {
+		upsertRow := oracleUpsertRow{sourceRow: rowIdx}
 		for idx, v := range row {
 			if _, isMarker := v.(oracleDefaultMarker); isMarker {
 				continue
@@ -189,16 +227,18 @@ func buildOracleUpserts(db *gorm.DB) []oracleInsertSQL {
 			}
 		}
 	}
-	for i := range rows {
-		if rows[i].generate {
-			_ = db.AddError(fmt.Errorf("%w: generated primary key upsert needs the INSERT RETURNING path", ErrUpsertUnsupported))
-			return nil
-		}
-	}
 
-	built := make([]oracleInsertSQL, 0, len(rows))
+	pkField := oracleGeneratedPKField(stmt)
 	ins := oracleInsertClause(stmt)
+	built := make([]oracleInsertSQL, 0, len(rows))
 	for _, row := range rows {
+		if row.generate {
+			// New records whose only conflict target is the missing generated
+			// key: INSERT RETURNING fills the key before associations write
+			// their foreign keys (design.md §5.3.4).
+			built = append(built, buildOracleInsertReturning(stmt, ins, pkField, row.columns, row.values, row.sourceRow))
+			continue
+		}
 		stmt.SQL = strings.Builder{}
 		stmt.Vars = make([]interface{}, 0, 2*len(row.columns))
 		writeOracleMerge(stmt, ins, oc, target, row)
@@ -260,11 +300,11 @@ func validateOracleOnConflict(oc clause.OnConflict, target []clause.Column) erro
 // key path: the conflict target is exactly the single auto-generated primary
 // key and the row leaves that key at its default (design.md §5.3.4).
 func oracleRowGeneratesPK(stmt *gorm.Statement, target []clause.Column, cols []clause.Column) bool {
-	if len(target) != 1 || stmt.Schema == nil || len(stmt.Schema.PrimaryFields) != 1 {
+	if len(target) != 1 {
 		return false
 	}
-	pk := stmt.Schema.PrioritizedPrimaryField
-	if pk == nil || !pk.HasDefaultValue || pk.DBName != target[0].Name {
+	pk := oracleGeneratedPKField(stmt)
+	if pk == nil || pk.DBName != target[0].Name {
 		return false
 	}
 	return !oracleRowHasColumn(cols, pk.DBName)
@@ -364,7 +404,8 @@ func oracleUpsertAssignments(oc clause.OnConflict, row oracleUpsertRow) clause.S
 }
 
 // execOracleInserts joins the built statements for a dry run, or executes them
-// in order and accumulates the affected row count.
+// in order, applies the primary key backfills and accumulates the affected row
+// count. A failed statement is never replayed.
 func execOracleInserts(db *gorm.DB, built []oracleInsertSQL) {
 	stmt := db.Statement
 	if db.Error != nil || len(built) == 0 {
@@ -397,6 +438,12 @@ func execOracleInserts(db *gorm.DB, built []oracleInsertSQL) {
 		}
 		rowsAffected += mustRowsAffected(result)
 		lastResult = result
+		if b.backfill != nil {
+			if err := oracleApplyBackfill(stmt, b.backfill); err != nil {
+				_ = db.AddError(err)
+				break
+			}
+		}
 	}
 	db.RowsAffected = rowsAffected
 	if db.Statement.Result != nil {
@@ -405,10 +452,95 @@ func execOracleInserts(db *gorm.DB, built []oracleInsertSQL) {
 	}
 }
 
+// oracleApplyBackfill copies the fetched generated key into the model field of
+// the statement's source row. Map destinations follow GORM's convention of
+// writing the key back under the column name.
+func oracleApplyBackfill(stmt *gorm.Statement, backfill *oraclePKBackfill) error {
+	var value interface{}
+	switch dest := backfill.dest.(type) {
+	case *uint64:
+		value = *dest
+	case *int64:
+		value = *dest
+	default:
+		return fmt.Errorf("oceanbase: unsupported generated key destination %T", backfill.dest)
+	}
+
+	switch values := stmt.Dest.(type) {
+	case map[string]interface{}:
+		values[backfill.field.DBName] = value
+		return nil
+	case *map[string]interface{}:
+		(*values)[backfill.field.DBName] = value
+		return nil
+	case []map[string]interface{}:
+		return oracleSetMapRowKey(values, backfill, value)
+	case *[]map[string]interface{}:
+		if values == nil {
+			return fmt.Errorf("oceanbase: generated key row %d out of range", backfill.sourceRow)
+		}
+		return oracleSetMapRowKey(*values, backfill, value)
+	}
+
+	rv := stmt.ReflectValue
+	switch rv.Kind() {
+	case reflect.Slice, reflect.Array:
+		if backfill.sourceRow >= rv.Len() {
+			return fmt.Errorf("oceanbase: generated key row %d out of range", backfill.sourceRow)
+		}
+		rv = reflect.Indirect(rv.Index(backfill.sourceRow))
+	}
+	return backfill.field.Set(stmt.Context, rv, value)
+}
+
+func oracleSetMapRowKey(values []map[string]interface{}, backfill *oraclePKBackfill, value interface{}) error {
+	if backfill.sourceRow >= len(values) || values[backfill.sourceRow] == nil {
+		return fmt.Errorf("oceanbase: generated key row %d out of range", backfill.sourceRow)
+	}
+	values[backfill.sourceRow][backfill.field.DBName] = value
+	return nil
+}
+
 // oracleInsertSQL is one fully built INSERT statement with its own vars.
 type oracleInsertSQL struct {
-	sql  string
-	vars []interface{}
+	sql      string
+	vars     []interface{}
+	backfill *oraclePKBackfill
+}
+
+// buildOracleInsertReturning renders one row as
+// INSERT INTO ... VALUES (...) RETURNING <pk> INTO ? and prepares the out
+// parameter the driver fills with the generated key. The statement is never
+// replayed and never falls back to LastInsertId (design.md §6.1).
+func buildOracleInsertReturning(stmt *gorm.Statement, ins clause.Insert, pkField *schema.Field, cols []clause.Column, values []interface{}, sourceRow int) oracleInsertSQL {
+	dest := oraclePKDest(pkField)
+	out := sql.Out{Dest: dest}
+
+	stmt.SQL = strings.Builder{}
+	stmt.Vars = make([]interface{}, 0, len(cols)+1)
+	writeOracleInsertSingle(stmt, ins, cols, values)
+	writeString(stmt, " RETURNING ")
+	stmt.WriteQuoted(clause.Column{Name: pkField.DBName})
+	writeString(stmt, " INTO ")
+	stmt.AddVar(stmt, out)
+
+	return oracleInsertSQL{
+		sql:  stmt.SQL.String(),
+		vars: append([]interface{}(nil), stmt.Vars...),
+		backfill: &oraclePKBackfill{
+			field:     pkField,
+			sourceRow: sourceRow,
+			dest:      dest,
+		},
+	}
+}
+
+// oraclePKDest allocates the out destination matching the primary key kind.
+func oraclePKDest(pk *schema.Field) interface{} {
+	if pk.DataType == schema.Uint {
+		return new(uint64)
+	}
+	return new(int64)
 }
 
 // groupOracleInsertRows splits converted create values into adjacent groups
@@ -459,29 +591,38 @@ func groupOracleInsertRows(values clause.Values) []oracleInsertGroup {
 // statement. Expression values (including leftover markers) build themselves;
 // everything else is bound as a positional parameter.
 func writeOracleInsert(stmt *gorm.Statement, ins clause.Insert, g oracleInsertGroup) {
-	table := ins.Table
-	if table.Name == "" {
-		table = clause.Table{Name: clause.CurrentTable}
-	}
-
 	if len(g.rows) == 1 {
-		if ins.Modifier != "" {
-			writeString(stmt, ins.Modifier)
-			writeByte(stmt, ' ')
-		}
-		writeString(stmt, "INSERT INTO ")
-		stmt.WriteQuoted(table)
-		writeOracleValues(stmt, g.columns, g.rows[0])
+		writeOracleInsertSingle(stmt, ins, g.columns, g.rows[0])
 		return
 	}
 
 	writeString(stmt, "INSERT ALL")
 	for _, row := range g.rows {
 		writeString(stmt, " INTO ")
-		stmt.WriteQuoted(table)
+		stmt.WriteQuoted(oracleInsertTable(ins))
 		writeOracleValues(stmt, g.columns, row)
 	}
 	writeString(stmt, " SELECT 1 FROM DUAL")
+}
+
+// writeOracleInsertSingle renders INSERT INTO <table> for one row; callers
+// append RETURNING or finish the statement.
+func writeOracleInsertSingle(stmt *gorm.Statement, ins clause.Insert, cols []clause.Column, values []interface{}) {
+	if ins.Modifier != "" {
+		writeString(stmt, ins.Modifier)
+		writeByte(stmt, ' ')
+	}
+	writeString(stmt, "INSERT INTO ")
+	stmt.WriteQuoted(oracleInsertTable(ins))
+	writeOracleValues(stmt, cols, values)
+}
+
+// oracleInsertTable resolves the INSERT target table.
+func oracleInsertTable(ins clause.Insert) clause.Table {
+	if ins.Table.Name != "" {
+		return ins.Table
+	}
+	return clause.Table{Name: clause.CurrentTable}
 }
 
 func writeOracleValues(stmt *gorm.Statement, columns []clause.Column, row []interface{}) {

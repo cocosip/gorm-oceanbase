@@ -190,7 +190,7 @@ func TestOracleDryRunQuoting(t *testing.T) {
 	}
 
 	createSQL := dry.Create(&oracleUser{Name: testUserName}).Statement.SQL.String()
-	if createSQL != `INSERT INTO "ORACLE_USERS" ("NAME") VALUES (?)` {
+	if createSQL != `INSERT INTO "ORACLE_USERS" ("NAME") VALUES (?) RETURNING "ID" INTO ?` {
 		t.Fatalf("create SQL = %q", createSQL)
 	}
 
@@ -345,19 +345,24 @@ func openOracleArticlesDB(t *testing.T) (*gorm.DB, *fakePool) {
 
 func TestOracleCreateSingleRowSQL(t *testing.T) {
 	db, pool := openOracleArticlesDB(t)
+	pool.server.seedOut(100)
 
 	article := oracleArticle{Title: "news", Rating: 8}
 	if err := db.Create(&article).Error; err != nil {
 		t.Fatalf("Create: %v", err)
 	}
-	wantExec := `INSERT INTO "ORACLE_ARTICLES" ("TITLE","RATING") VALUES (?,?)`
+	wantExec := `INSERT INTO "ORACLE_ARTICLES" ("TITLE","RATING") VALUES (?,?) RETURNING "ID" INTO ?`
 	if !containsExec(pool.server.recordedExecs(), wantExec) {
 		t.Fatalf("execs = %v, want %q", pool.server.recordedExecs(), wantExec)
+	}
+	if article.ID != 100 {
+		t.Fatalf("generated ID = %d, want 100", article.ID)
 	}
 }
 
 func TestOracleCreateLiteralDefaultBindsValue(t *testing.T) {
 	db, pool := openOracleArticlesDB(t)
+	pool.server.seedOut(110)
 
 	article := oracleTaggedArticle{Title: "draft"}
 	if err := db.Create(&article).Error; err != nil {
@@ -365,12 +370,15 @@ func TestOracleCreateLiteralDefaultBindsValue(t *testing.T) {
 	}
 	// A literal default tag binds the default value for a zero field and
 	// writes it back to the model (GORM convention).
-	wantExec := `INSERT INTO "ORACLE_TAGGED_ARTICLES" ("TITLE","RATING") VALUES (?,?)`
+	wantExec := `INSERT INTO "ORACLE_TAGGED_ARTICLES" ("TITLE","RATING") VALUES (?,?) RETURNING "ID" INTO ?`
 	if !containsExec(pool.server.recordedExecs(), wantExec) {
 		t.Fatalf("execs = %v, want %q", pool.server.recordedExecs(), wantExec)
 	}
 	if article.Rating != 50 {
 		t.Fatalf("model Rating = %d, want the literal default 50", article.Rating)
+	}
+	if article.ID != 110 {
+		t.Fatalf("generated ID = %d, want 110", article.ID)
 	}
 }
 
@@ -387,19 +395,24 @@ func TestOracleCreateRunsInDefaultTransaction(t *testing.T) {
 
 func TestOracleCreateOmitsZeroDefaultField(t *testing.T) {
 	db, pool := openOracleArticlesDB(t)
+	pool.server.seedOut(120)
 
 	article := oracleArticle{Title: "draft"}
 	if err := db.Create(&article).Error; err != nil {
 		t.Fatalf("Create: %v", err)
 	}
-	wantExec := `INSERT INTO "ORACLE_ARTICLES" ("TITLE") VALUES (?)`
+	wantExec := oracleReturningTitleSQL
 	if !containsExec(pool.server.recordedExecs(), wantExec) {
 		t.Fatalf("execs = %v, want %q", pool.server.recordedExecs(), wantExec)
+	}
+	if article.ID != 120 {
+		t.Fatalf("generated ID = %d, want 120", article.ID)
 	}
 }
 
 func TestOracleCreateMapNilAndExprNull(t *testing.T) {
 	db, pool := openOracleArticlesDB(t)
+	pool.server.seedOut(130)
 
 	if err := db.Model(&oracleArticle{}).Create(map[string]interface{}{
 		testColumnRating: 5,
@@ -407,8 +420,9 @@ func TestOracleCreateMapNilAndExprNull(t *testing.T) {
 	}).Error; err != nil {
 		t.Fatalf("Create map: %v", err)
 	}
-	// Map keys render sorted; a present nil stays an explicit bound NULL.
-	wantExec := `INSERT INTO "ORACLE_ARTICLES" ("RATING","TITLE") VALUES (?,?)`
+	// Map keys render sorted; a present nil stays an explicit bound NULL. The
+	// generated key is written back under the column name.
+	wantExec := `INSERT INTO "ORACLE_ARTICLES" ("RATING","TITLE") VALUES (?,?) RETURNING "ID" INTO ?`
 	if !containsExec(pool.server.recordedExecs(), wantExec) {
 		t.Fatalf("execs = %v, want %q", pool.server.recordedExecs(), wantExec)
 	}
@@ -419,7 +433,7 @@ func TestOracleCreateMapNilAndExprNull(t *testing.T) {
 	}).Error; err != nil {
 		t.Fatalf("Create map with expr: %v", err)
 	}
-	wantExprExec := `INSERT INTO "ORACLE_ARTICLES" ("RATING","TITLE") VALUES (NULL,?)`
+	wantExprExec := `INSERT INTO "ORACLE_ARTICLES" ("RATING","TITLE") VALUES (NULL,?) RETURNING "ID" INTO ?`
 	if !containsExec(pool.server.recordedExecs(), wantExprExec) {
 		t.Fatalf("execs = %v, want %q", pool.server.recordedExecs(), wantExprExec)
 	}
@@ -428,17 +442,43 @@ func TestOracleCreateMapNilAndExprNull(t *testing.T) {
 func TestOracleCreateBatchInsertAll(t *testing.T) {
 	db, pool := openOracleArticlesDB(t)
 
-	articles := []oracleArticle{{Title: "a"}, {Title: "b"}}
+	// Provided primary keys keep the multi-row INSERT ALL shape.
+	articles := []oracleArticle{{ID: 1, Title: "a"}, {ID: 2, Title: "b"}}
 	tx := db.Create(&articles)
 	if tx.Error != nil {
 		t.Fatalf("Create slice: %v", tx.Error)
 	}
-	wantExec := `INSERT ALL INTO "ORACLE_ARTICLES" ("TITLE") VALUES (?) INTO "ORACLE_ARTICLES" ("TITLE") VALUES (?) SELECT 1 FROM DUAL`
+	wantExec := `INSERT ALL INTO "ORACLE_ARTICLES" ("TITLE","ID") VALUES (?,?) INTO "ORACLE_ARTICLES" ("TITLE","ID") VALUES (?,?) SELECT 1 FROM DUAL`
 	if !containsExec(pool.server.recordedExecs(), wantExec) {
 		t.Fatalf("execs = %v, want %q", pool.server.recordedExecs(), wantExec)
 	}
+	if containsExec(pool.server.recordedExecs(), "RETURNING") {
+		t.Fatal("provided keys must not take the RETURNING path")
+	}
 	if tx.RowsAffected != 1 {
 		t.Fatalf("RowsAffected = %d, want the fake driver's per-statement 1", tx.RowsAffected)
+	}
+}
+
+func TestOracleCreateBatchGeneratedKeysRowByRow(t *testing.T) {
+	db, pool := openOracleArticlesDB(t)
+	pool.server.seedOut(200)
+
+	// Generated keys are fetched one row at a time; they are never batched
+	// into INSERT ALL and never extrapolated (design.md §6.1).
+	articles := []oracleArticle{{Title: "a"}, {Title: "b"}}
+	if err := db.Create(&articles).Error; err != nil {
+		t.Fatalf("Create slice: %v", err)
+	}
+	if containsExec(pool.server.recordedExecs(), "INSERT ALL") {
+		t.Fatal("generated keys must not batch into INSERT ALL")
+	}
+	wantExec := oracleReturningTitleSQL
+	if !containsExec(pool.server.recordedExecs(), wantExec) {
+		t.Fatalf("execs = %v, want %q", pool.server.recordedExecs(), wantExec)
+	}
+	if articles[0].ID != 200 || articles[1].ID != 201 {
+		t.Fatalf("generated IDs = %d, %d; want 200, 201", articles[0].ID, articles[1].ID)
 	}
 }
 
@@ -447,11 +487,11 @@ func TestOracleCreateBatchDefaultMarkersOmitted(t *testing.T) {
 
 	// Both rows leave the default-tagged field zero: the column is omitted for
 	// the whole INSERT ALL instead of being written as NULL.
-	articles := []oracleArticle{{Title: "a", Rating: 0}, {Title: "b", Rating: 0}}
+	articles := []oracleArticle{{ID: 1, Title: "a"}, {ID: 2, Title: "b"}}
 	if err := db.Create(&articles).Error; err != nil {
 		t.Fatalf("Create slice: %v", err)
 	}
-	wantExec := `INSERT ALL INTO "ORACLE_ARTICLES" ("TITLE") VALUES (?) INTO "ORACLE_ARTICLES" ("TITLE") VALUES (?) SELECT 1 FROM DUAL`
+	wantExec := `INSERT ALL INTO "ORACLE_ARTICLES" ("TITLE","ID") VALUES (?,?) INTO "ORACLE_ARTICLES" ("TITLE","ID") VALUES (?,?) SELECT 1 FROM DUAL`
 	if !containsExec(pool.server.recordedExecs(), wantExec) {
 		t.Fatalf("execs = %v, want %q", pool.server.recordedExecs(), wantExec)
 	}
@@ -483,19 +523,24 @@ func TestOracleCreateMixedColumnSetsSplitStatements(t *testing.T) {
 
 func TestOracleCreateAllDefaultRow(t *testing.T) {
 	db, pool := openOracleArticlesDB(t)
+	pool.server.seedOut(140)
 
 	// Every column falls back to a database default: the record renders the
-	// single-column DEFAULT form instead of an empty column list.
+	// single-column DEFAULT form, and the generated key still returns.
 	type oracleAllDefault struct {
 		ID     uint
 		Rating int `gorm:"default:(50)"`
 	}
-	if err := db.Create(&oracleAllDefault{}).Error; err != nil {
+	record := oracleAllDefault{}
+	if err := db.Create(&record).Error; err != nil {
 		t.Fatalf("Create: %v", err)
 	}
-	wantExec := `INSERT INTO "ORACLE_ALL_DEFAULTS" ("RATING") VALUES (DEFAULT)`
+	wantExec := `INSERT INTO "ORACLE_ALL_DEFAULTS" ("RATING") VALUES (DEFAULT) RETURNING "ID" INTO ?`
 	if !containsExec(pool.server.recordedExecs(), wantExec) {
 		t.Fatalf("execs = %v, want %q", pool.server.recordedExecs(), wantExec)
+	}
+	if record.ID != 140 {
+		t.Fatalf("generated ID = %d, want 140", record.ID)
 	}
 }
 
@@ -510,36 +555,56 @@ func TestOracleCreateEmptySliceErrors(t *testing.T) {
 	}
 }
 
-func TestOracleUpsertGeneratePathRejectedBeforeReturning(t *testing.T) {
+func TestOracleUpsertGeneratePathUsesInsertReturning(t *testing.T) {
 	db, pool := openOracleArticlesDB(t)
+	pool.server.seedOut(300)
 
-	// A new record (zero primary key) upserted by that key belongs to the
-	// INSERT RETURNING path; until it lands the request is refused before any
-	// DML instead of guessing an insert-or-update.
-	err := db.Clauses(clause.OnConflict{UpdateAll: true}).Create(&oracleArticle{Title: "x"}).Error
-	if !errors.Is(err, ErrUpsertUnsupported) {
-		t.Fatalf("err = %v, want ErrUpsertUnsupported", err)
+	// A new record (zero primary key) upserted by that key takes the INSERT
+	// RETURNING path and gets its key before associations would write theirs.
+	article := oracleArticle{Title: "x"}
+	if err := db.Clauses(clause.OnConflict{UpdateAll: true}).Create(&article).Error; err != nil {
+		t.Fatalf("Create: %v", err)
 	}
-	if len(pool.server.recordedExecs()) != 0 {
-		t.Fatal("the generate path must be refused before any DML")
+	wantExec := oracleReturningTitleSQL
+	if !containsExec(pool.server.recordedExecs(), wantExec) {
+		t.Fatalf("execs = %v, want %q", pool.server.recordedExecs(), wantExec)
+	}
+	if containsExec(pool.server.recordedExecs(), "MERGE INTO") {
+		t.Fatal("the generated key path must not MERGE")
+	}
+	if article.ID != 300 {
+		t.Fatalf("generated ID = %d, want 300", article.ID)
 	}
 }
 
 func TestOracleCreateExecErrorPropagatesAndRollsBack(t *testing.T) {
 	db, pool := openOracleArticlesDB(t)
-	pool.server.replyExecError(`INSERT INTO "ORACLE_ARTICLES" ("TITLE") VALUES (?)`, errors.New("unique constraint violated"))
+	pool.server.seedOut(400)
+	pool.server.replyExecError(`INSERT INTO "ORACLE_ARTICLES" ("TITLE") VALUES (?) RETURNING "ID" INTO ?`, errors.New("unique constraint violated"))
 
-	articles := []oracleArticle{{Title: "a", Rating: 8}, {Title: "b"}}
+	articles := []oracleArticle{{ID: 1, Title: "a", Rating: 8}, {Title: "b"}}
 	tx := db.Create(&articles)
 	if tx.Error == nil {
 		t.Fatal("expected the execution error to propagate")
 	}
 	exec := pool.server.recordedExecs()
-	if !containsExec(exec, `INSERT INTO "ORACLE_ARTICLES" ("TITLE","RATING") VALUES (?,?)`) {
-		t.Fatalf("execs = %v, want the first group executed", exec)
+	if !containsExec(exec, `INSERT INTO "ORACLE_ARTICLES" ("TITLE","RATING","ID") VALUES (?,?,?)`) {
+		t.Fatalf("execs = %v, want the first row executed", exec)
 	}
 	if tx.RowsAffected != 1 {
-		t.Fatalf("RowsAffected = %d, want 1 from the first group", tx.RowsAffected)
+		t.Fatalf("RowsAffected = %d, want 1 from the first row", tx.RowsAffected)
+	}
+	merges := 0
+	for _, e := range exec {
+		if containsQuery([]string{e}, "RETURNING") {
+			merges++
+		}
+	}
+	if merges != 1 {
+		t.Fatalf("the failed RETURNING statement must not be replayed, execs = %v", exec)
+	}
+	if articles[1].ID != 0 {
+		t.Fatalf("failed row must not be backfilled, got ID = %d", articles[1].ID)
 	}
 	tx2 := pool.server.recordedTx()
 	if len(tx2) != 2 || tx2[0] != "BEGIN" || tx2[1] != "ROLLBACK" {
@@ -551,12 +616,12 @@ func TestOracleDryRunCreateMultiGroupSQL(t *testing.T) {
 	db, _ := openOracleArticlesDB(t)
 
 	sql := db.Session(&gorm.Session{DryRun: true}).Create(&[]oracleArticle{
-		{Title: "a", Rating: 8},
+		{ID: 1, Title: "a", Rating: 8},
 		{Title: "b"},
 	}).Statement.SQL.String()
 
-	want := "INSERT INTO \"ORACLE_ARTICLES\" (\"TITLE\",\"RATING\") VALUES (?,?);\n" +
-		"INSERT INTO \"ORACLE_ARTICLES\" (\"TITLE\") VALUES (?)"
+	want := "INSERT INTO \"ORACLE_ARTICLES\" (\"TITLE\",\"RATING\",\"ID\") VALUES (?,?,?);\n" +
+		"INSERT INTO \"ORACLE_ARTICLES\" (\"TITLE\") VALUES (?) RETURNING \"ID\" INTO ?"
 	if sql != want {
 		t.Fatalf("dry run SQL = %q, want %q", sql, want)
 	}
@@ -716,18 +781,28 @@ func TestOracleUpsertRejectsConditionalShapes(t *testing.T) {
 	}
 }
 
-func TestOracleUpsertMixedPrimaryKeysSplitRejectedAsWhole(t *testing.T) {
+func TestOracleUpsertMixedPrimaryKeysSplit(t *testing.T) {
 	db, pool := openOracleArticlesDB(t)
+	pool.server.seedOut(500)
 
-	// The first row is MERGE-able, the second needs the generated key path:
-	// the whole batch is validated first, so nothing executes.
-	articles := []oracleArticle{{ID: 1, Title: "old"}, {Title: testUpdatedTitle}}
-	err := db.Clauses(clause.OnConflict{DoNothing: true}).Create(&articles).Error
-	if !errors.Is(err, ErrUpsertUnsupported) {
-		t.Fatalf("err = %v, want ErrUpsertUnsupported", err)
+	// The first row carries its key and MERGEs; the second takes the
+	// generated key path. Both run in input order.
+	articles := []oracleArticle{{ID: 1, Title: "old"}, {Title: "new"}}
+	if err := db.Clauses(clause.OnConflict{DoNothing: true}).Create(&articles).Error; err != nil {
+		t.Fatalf("Create slice: %v", err)
 	}
-	if len(pool.server.recordedExecs()) != 0 {
-		t.Fatal("validation must complete before any DML")
+	exec := pool.server.recordedExecs()
+	if !containsExec(exec, "MERGE INTO") {
+		t.Fatalf("execs = %v, want the provided-key row to MERGE", exec)
+	}
+	if !containsExec(exec, oracleReturningTitleSQL) {
+		t.Fatalf("execs = %v, want the generated-key row to INSERT RETURNING", exec)
+	}
+	if articles[1].ID != 500 {
+		t.Fatalf("generated ID = %d, want 500", articles[1].ID)
+	}
+	if articles[0].ID != 1 {
+		t.Fatalf("provided ID changed: %d", articles[0].ID)
 	}
 }
 
@@ -743,5 +818,88 @@ func TestOracleUpsertWithoutTargetErrors(t *testing.T) {
 	}
 	if len(pool.server.recordedExecs()) != 0 {
 		t.Fatal("no DML may run without a conflict target")
+	}
+}
+
+func TestOracleIdentityVersionGate(t *testing.T) {
+	cases := []struct {
+		name    string
+		version string
+		want    bool
+	}{
+		{name: "bare candidate", version: "4.2.1.0", want: true},
+		{name: "later release", version: "4.3.1.0", want: true},
+		{name: "compatibility prefix", version: testOBCEVersion, want: true},
+		{name: "below candidate", version: "4.2.0.0", want: false},
+		{name: "older minor", version: "4.1.9.9", want: false},
+		{name: "missing", version: "", want: false},
+		{name: "no parsable OB version", version: "5.7.25-OceanBase", want: false},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			d := &Dialector{Config: &Config{ServerVersion: tc.version}}
+			if got := d.oracleIdentitySupported(); got != tc.want {
+				t.Fatalf("oracleIdentitySupported(%q) = %v, want %v", tc.version, got, tc.want)
+			}
+		})
+	}
+}
+
+func TestOracleMigratorSequenceExtensions(t *testing.T) {
+	db, _, pool := openOracleWithFakeDB(t)
+
+	migrator, ok := db.Migrator().(OracleSequenceMigrator)
+	if !ok {
+		t.Fatal("the oracle migrator must expose the sequence extension")
+	}
+
+	if err := migrator.CreateSequence("my_seq"); err != nil {
+		t.Fatalf("CreateSequence: %v", err)
+	}
+	if !containsExec(pool.server.recordedExecs(), `CREATE SEQUENCE "MY_SEQ"`) {
+		t.Fatalf("execs = %v, want the quoted CREATE SEQUENCE", pool.server.recordedExecs())
+	}
+
+	pool.server.reply(`SELECT count(*) FROM user_sequences WHERE sequence_name = ?`, "1")
+	if !migrator.HasSequence("my_seq") {
+		t.Fatal("HasSequence must find the seeded sequence")
+	}
+	pool.server.reply(`SELECT count(*) FROM user_sequences WHERE sequence_name = ?`, "0")
+	if migrator.HasSequence("my_seq") {
+		t.Fatal("HasSequence must not find an empty result")
+	}
+}
+
+func TestOracleCreateGeneratedKeyNeverUsesLastInsertId(t *testing.T) {
+	db, pool := openOracleArticlesDB(t)
+	pool.server.seedOut(600)
+
+	// The fake driver's LastInsertId always errors; a call would surface here.
+	article := oracleArticle{Title: "x"}
+	if err := db.Create(&article).Error; err != nil {
+		t.Fatalf("Create: %v", err)
+	}
+	if article.ID != 600 {
+		t.Fatalf("generated ID = %d, want 600", article.ID)
+	}
+}
+
+func TestOracleCreateMapSliceGeneratedKeys(t *testing.T) {
+	db, pool := openOracleArticlesDB(t)
+	pool.server.seedOut(700)
+
+	rows := []map[string]interface{}{
+		{testColumnTitle: "a"},
+		{testColumnTitle: "b"},
+	}
+	if err := db.Model(&oracleArticle{}).Create(&rows).Error; err != nil {
+		t.Fatalf("Create map slice: %v", err)
+	}
+	if rows[0]["id"] != uint64(700) || rows[1]["id"] != uint64(701) {
+		t.Fatalf("generated map keys = %T %v, %T %v; want uint64 700, 701", rows[0]["id"], rows[0]["id"], rows[1]["id"], rows[1]["id"])
+	}
+	if containsExec(pool.server.recordedExecs(), "INSERT ALL") {
+		t.Fatal("generated keys must not batch into INSERT ALL")
 	}
 }
