@@ -1,0 +1,100 @@
+# gorm-oceanbase 开发文档（任务分解与进度）
+
+本文档基于 [design.md](design.md) 定义开发任务，直接通过各任务的状态列表示当前进度。
+
+**当前进度：已完成 0 / 32，未开始 32，进行中 0，受阻 0。下一项：G01 模块初始化。**
+
+**维护规则**：
+
+- 开始任务时将该行状态改为 `◐`；满足该任务验收要求后改为 `✅`；受阻时改为 `⚠️`，在该行简述原因。部分完成保持 `◐`，在该行简述剩余工作。
+- 每次更新任务状态，同步顶部进度汇总、下一项任务和阶段状态；阶段内所有任务验收通过后，阶段才标为 `✅`。
+- 任务范围变化时直接修改对应行的内容、依赖和验收，并同步设计文档；不在文末追加工作日志或变更流水。
+- 文档修订、临时审查实验和外部驱动测试不等于本仓库开发任务完成，不能据此标记 `✅`。
+
+**状态图例**：☐ 未开始 ｜ ◐ 进行中 ｜ ✅ 已完成 ｜ ⚠️ 受阻/搁置
+
+---
+
+## 1. 阶段总览
+
+| 阶段 | 目标 | 对应设计文档 | 状态 |
+| --- | --- | --- | --- |
+| M0 | 仓库骨架与依赖就绪 | §2 | ☐ |
+| M1 | **MySQL 模式完整可用**（首个可用版本） | §3–§5、§7、§10 | ☐ |
+| M2 | Oracle 模式可用 | §5、§6、§9 | ☐ |
+| M3 | 增强：非主键字段与通用 RETURNING、驱动扩展桥接、兼容矩阵 | §5.3、§8 | ☐ |
+
+---
+
+## 2. M0：仓库骨架
+
+| ID | 任务 | 内容要点 | 依赖 | 验收 | 状态 |
+| --- | --- | --- | --- | --- | --- |
+| G01 | 模块初始化 | `go.mod`（module github.com/cocosip/gorm-oceanbase，go 1.26）；固定开发基准 `gorm.io/gorm@v1.31.1`、`github.com/cocosip/go-oceanbase@v0.1.1`（远程模块，不用 replace）；更低 GORM 版本按矩阵验收后声明 | — | `go build ./...` 通过 | ☐ |
+| G02 | README 骨架 | 项目定位、快速上手（对齐 design.md §3 入口示例）、文档索引 | G01 | 评审通过 | ☐ |
+| G03 | CI 骨架 | GitHub Actions：build + vet + 无库 test + golangci-lint（复用现有 .golangci.yml）；集成包建立后补 `go test -tags=integration ./tests/integration -run '^$'` 编译检查 | G01 | 骨架阶段常规检查通过；G22/G39 建立后集成编译通过，不将 skip 记作真实验收 | ☐ |
+
+## 3. M1：MySQL 模式完整可用
+
+### 3.1 Dialector 主体（oceanbase.go、version.go）
+
+| ID | 任务 | 内容要点 | 依赖 | 验收 | 状态 |
+| --- | --- | --- | --- | --- | --- |
+| G10 | Config 与入口 | design.md §3 字段；Open/New 不联网；校验 DSN/DSNConfig/Conn 互斥；记录 DSN 显式参数后用驱动 ParseDSN；复制结构化配置，不反向序列化或保留自定义 DriverName 路径 | G01 | 单测：输入分支、无副作用、错误由 Initialize 返回、调用者配置不被修改 | ☐ |
+| G10a | MySQL 档案注入 | 顶层非零值 > DSN 显式参数/DSNConfig 非零值 > 默认 8；在正式 Connector 前完成；保留已规范化 DSNConfig 中的 5；Oracle 不注入（design.md §4.2、R6） | G10, G11 | 单测：实际 Connector 配置为 8、显式 5 保留、来源优先级；TIME 小数与 DATETIME 行为分别验证 | ☐ |
+| G10b | 时间读取策略 | 内部 Session.ParseTime=true；DSN 显式 false 报配置错误；DSNConfig bool 零值按 GORM 策略开启；外部 Conn 的前提写入文档（design.md §4.2） | G10 | 单测：time.Time 扫描成功、显式 false 拒绝、外部池不被修改 | ☐ |
+| G11 | 模式确定 | 顶层非零 Mode > DSN 显式模式/DSNConfig 非零 Mode > MySQL；零值表示未指定；仅 DSN mode=auto 用临时池和已有 SessionVariable 读取并校验模式，关闭临时资源后固化正式配置（design.md §4.1） | G10 | 单测/协议模拟：显式来源与覆盖、MYSQL/ORACLE/NULL/未知值、超时和权限错误不误判；M1 检出 Oracle 明确拒绝，不套用 MySQL 方言 | ☐ |
+| G12 | NowFunc 安装 | Apply 记录用户是否已设置；Initialize 在最终模式确定后安装 MySQL/Oracle 默认精度策略，auto 不能预先按 MySQL 处理（design.md §4） | G11 | 单测：两种精度与 auto 最终模式、不覆盖用户设置 | ☐ |
+| G13 | 版本探测 | MySQL `SELECT OB_VERSION()`，仅函数不支持时回退 VERSION()；Oracle `SELECT ob_version() FROM dual`；按真实 OB 版本解析；用户 ServerVersion/跳过查询/未知版本保守策略；与驱动自身探测开关区分 | G11 | 单测：双方言 SQL、OceanBase 标记解析、有限回退、错误传播、未知版本禁用需确认的能力 | ☐ |
+| G14 | Initialize | 先解析/探测/合并最终配置，再 NewConnector→OpenDB；外部 Conn 要求显式具体 Mode；候选池仅在所有可失败步骤成功后挂到 db.ConnPool，提前挂载须在错误路径解除引用，避免 GORM 关闭外部池/事务所属池；失败关闭自建资源；注册 callbacks/ClauseBuilders、SavePointerDialectorInterface，通过实际 ConnPool 支持 db.DB()（design.md §4、R13） | G10a, G10b, G11, G12, G13 | 协议模拟：最终配置、默认值和资源释放；从 gorm.Open 注入初始化错误后，原外部池仍可查询、事务仍可使用，含包装池；G22 真实连接验收 | ☐ |
+
+### 3.2 MySQL 方言行为（dialect_mysql.go）
+
+| ID | 任务 | 内容要点 | 依赖 | 验收 | 状态 |
+| --- | --- | --- | --- | --- | --- |
+| G15 | QuoteTo | 反引号状态机（含 `.` 分隔、`` ` `` 转义），行为对齐 gorm mysql driver | G10 | 单测：引用用例集与 mysql driver 输出一致 | ☐ |
+| G16 | DataTypeOf | design.md §5.1 MySQL 表全量：Bool/Int/Uint/Float/String/Time/Bytes/自定义 + AUTO_INCREMENT/unsigned；字符串按字段 Size、DefaultStringSize、条件 191、longtext 顺序决策，不统一默认 191 | G10 | 单测：全枚举快照；普通 string→longtext、主键/默认值/INDEX/UNIQUE→varchar(191)、显式长度/全局长度及 mediumtext/longtext 边界，对拍 mysql v1.6.0 | ☐ |
+| G17 | 其余接口 | `DefaultValueOf`(DEFAULT)、`BindVarTo`(?)、`Explain` | G10 | 单测 | ☐ |
+| G18 | ClauseBuilders | ON CONFLICT→`ON DUPLICATE KEY UPDATE`（含 excluded→VALUES(col)）；空 VALUES() 特例；按版本 FOR SHARE（design.md §5 表） | G14 | DryRun SQL 快照测试 | ☐ |
+
+### 3.3 Migrator 与错误翻译（migrator.go、error_translator.go）
+
+| ID | 任务 | 内容要点 | 依赖 | 验收 | 状态 |
+| --- | --- | --- | --- | --- | --- |
+| G19 | MySQL Migrator | 基于通用 migrator + information_schema：表/列/索引/约束/视图/类型查询；ColumnTypes/AlterColumn/RenameColumn 等（特性开关接 G13 结果） | G14, G16 | 集成：AutoMigrate 全流程 + 增量变更 | ☐ |
+| G20 | 错误翻译 | `*dberrors.Error` 按 MySQL 码表：1062→ErrDuplicatedKey，1451/1452→ErrForeignKeyViolated；未命中原样返回 | G11 | 单测：码表命中/未命中/非驱动错误 | ☐ |
+
+### 3.4 测试与文档
+
+| ID | 任务 | 内容要点 | 依赖 | 验收 | 状态 |
+| --- | --- | --- | --- | --- | --- |
+| G21 | 单元测试收口 | 配置/连接边界及 DryRun SQL 对拍，含 gorm.Open 失败后的外部资源所有权和字符串默认规则；差异白名单（探测、boolean 等）；最低 GORM 版本单独跑矩阵，未跑版本不声明支持（design.md §10） | G10–G20（含 G10a/G10b） | `go test ./... -count=1` 全绿；记录实际 GORM 测试版本 | ☐ |
+| G22 | MySQL 集成测试 | integration tag、OB_MYSQL_DSN：CRUD、关联、事务/SavePoint、AutoMigrate、并发；ParseTime=true 的 time.Time 读取；datetime(3)/(6) 往返；TIME(3)/(6) 的档案 5/8 差异；与 G03 同步编译检查 | G14–G20 | 真实 MySQL 租户验收，记录版本和 pass/fail/skip；DSN 缺失的 skip 不算通过 | ☐ |
+| G23 | MySQL 模式使用文档 | README：模式/档案优先级、ParseTime 要求、外部池前提及所有权、字符串默认长度规则、auto 错误语义、无混合模式租户；仅声明实际验收范围 | G21, G22 | 评审通过 | ☐ |
+
+## 4. M2：Oracle 模式可用
+
+| ID | 任务 | 内容要点 | 依赖 | 验收 | 状态 |
+| --- | --- | --- | --- | --- | --- |
+| G30 | Oracle 模式入口 | 在 G11 的模式解析上接入 Oracle 行为；复用 SessionVariable，不新增 PinnedMode；启用 G13 的 Oracle 产品版本查询及最终模式 NowFunc | G11, G12, G13, G14 | 单测/协议模拟：显式 oracle、auto→oracle、读取错误直接返回；G39 真实验收 | ☐ |
+| G31 | QuoteTo(Oracle) | 双引号 + 未加引号标识符大写化（R2）；区分显式大小写名称，覆盖结果列到模型字段的映射 | G30 | 单测：大小写/转义/扫描；G39 真实大小写验收 | ☐ |
+| G32 | DataTypeOf(Oracle) | Int64→NUMBER(19,0)、Uint64→NUMBER(20,0)；其余 NUMBER/VARCHAR2/CLOB/RAW/BLOB/TIMESTAMP；Object/Array 必须显式 SQL 类型 tag、服务器预处理；限定带时区 Scanner 路径（design.md §5.1/5.2） | G30 | 单测：映射、int64/uint64 极值、复杂类型推断负例与 tag 正例 | ☐ |
+| G33 | LIMIT 改写 | `ClauseBuilders["LIMIT"]` → `OFFSET n ROWS FETCH FIRST m ROWS ONLY` | G30 | DryRun 快照 | ☐ |
+| G34 | Oracle Create 与批量插入 | 替换 gorm:create，保留事务/hook/关联回调；整句构建 INSERT/INSERT ALL；default tag 零值与显式 NULL 按 GORM 输入形式区分；按相邻相同列集合批量，必要时逐条执行；为 G35/G36 保留逐行冲突目标与主键上下文（design.md §5.3） | G30, G31, G32 | 完整 SQL 快照无重复前缀；结构体默认值、map nil/NULL 表达式、不同列集合/输入顺序与执行错误用例；生成主键路径接 G36 | ☐ |
+| G35 | MERGE upsert 与主键分流 | 校验有效匹配列和唯一约束；UpdateAll 排除 ON 列，显式修改 ON 列拒绝，DoNothing 无更新分支；主键已提供/预分配时 MERGE；单列自动生成主键缺省且目标仅为主键时交 G36 INSERT RETURNING，不按子句来源判断；非主键目标且需生成回填时拒绝；当前回调批量先校验再写入（design.md §5.3、R14） | G34 | SQL 快照与 G39 集成：插入/更新/DoNothing、关联自动 ON CONFLICT、Save(slice) 与混合主键分流；不支持条件/ON 列更新及非主键生成请求在对应回调 DML 前拒绝；竞争错误不重试 | ☐ |
+| G36 | 生成主键与基础 RETURNING | IDENTITY 候选门槛 4.2.1 待真实验收、未知/低版本 DDL 前拒绝；单行 INSERT RETURNING INTO + sql.Out 回填，批量逐条回填；接 G35 主键目标分流，关联 ID 在外键/中间表写入前回填；序列 seq.NEXTVAL 预分配、autoIncrement:false；OracleMigrator 序列扩展（design.md §6） | G13, G32, G34, G35 | 模拟：不调用 LastInsertId、不重放；集成：IDENTITY/序列/显式主键、混合 ID、新建各类关联及 FullSaveAssociations、Save(slice)、外键/中间表引用、默认事务回滚与关闭事务后的错误 | ☐ |
+| G37 | Oracle Migrator | ALL_TAB_COLUMNS/ALL_CONSTRAINTS/ALL_INDEXES/ALL_CATALOG 查询；接 G36 的主键 DDL 与已验收版本门槛，未知/不支持版本在 DDL 前拒绝 IDENTITY | G31, G32, G36 | 集成：AutoMigrate 全流程，含主键 DDL 的允许/拒绝路径 | ☐ |
+| G38 | Oracle 错误翻译 | ORA 码表：1→ErrDuplicatedKey，2291/2292→ErrForeignKeyViolated（按模式隔离） | G30 | 单测 | ☐ |
+| G39 | Oracle 集成测试与文档 | OB_ORACLE_DSN：CRUD/迁移、标识符扫描、默认值/NULL、批量主键回填、受限 MERGE；新建 belongs-to/has-one/has-many/many-to-many、混合新旧对象、FullSaveAssociations、Save(slice)；NUMBER 边界、Object 预处理/文本负例、Array 存储限制；与 G03 同步编译检查 | G31–G38 | 真实 Oracle 验收并记录版本/pass/fail/skip；验证外键/中间表、拒绝与事务边界；文档明确非主键 MERGE 不回填目标 ID，核实 IDENTITY 门槛；不把模拟或 skip 记作通过 | ☐ |
+
+## 5. M3：增强（可选项，按需排期）
+
+| ID | 任务 | 内容要点 | 依赖 | 状态 |
+| --- | --- | --- | --- | --- |
+| G51 | 扩展 RETURNING INTO | 非主键数据库默认字段、通用 clause.Returning、Update/Delete 回填；基础 Create 主键回填已归 G36，不以本任务推迟 M2 主键能力 | G36, G39 | ☐ |
+| G52 | 扩展桥接 | WithPinnedConn 复用当前连接或从普通池借出，拒绝事务含 PrepareStmt 包装；事务内示例直接传原 sql.Tx；ExecBatch/LOB/游标/元数据按驱动签名使用；XA 单作用域且拒绝混用本地事务；验收回滚、单连接池、取消与所有权（design.md §8） | G14, G39 | ☐ |
+| G53 | 兼容性矩阵 | docs/compatibility.md：特性 × 模式 × OB/GORM 版本 × 验证状态；包含 M2 upsert 限制、IDENTITY 门槛证据、复杂类型和扩展事务边界 | G22, G39, G51, G52 | ☐ |
+
+---
+
+> M3 的 3 项任务计入总数，属于可选增强，不计入 M1/M2 交付承诺。
