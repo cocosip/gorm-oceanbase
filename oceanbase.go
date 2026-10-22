@@ -41,6 +41,9 @@ var (
 	// ErrUpsertUnsupported reports an upsert request the Oracle create callback
 	// cannot serve; the semantics are never silently dropped (design.md §5.3).
 	ErrUpsertUnsupported = errors.New("oceanbase: upsert is not supported in Oracle mode")
+	// ErrIdentityUnsupported reports IDENTITY DDL refused before execution
+	// because the server version is unknown or below the verified threshold.
+	ErrIdentityUnsupported = errors.New("oceanbase: IDENTITY is not verified for this server version")
 )
 
 // Config configures the OceanBase dialector. DSN, DSNConfig and Conn are

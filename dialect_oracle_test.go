@@ -903,3 +903,198 @@ func TestOracleCreateMapSliceGeneratedKeys(t *testing.T) {
 		t.Fatal("generated keys must not batch into INSERT ALL")
 	}
 }
+
+func openOracleArticlesMigratorDB(t *testing.T, serverVersion string) (*gorm.DB, *fakePool) {
+	t.Helper()
+	pool := newFakePool(t)
+	if serverVersion != "" {
+		pool.server.reply("SELECT ob_version() FROM dual", serverVersion)
+	}
+	dialector := &Dialector{Config: &Config{
+		Conn:                      pool,
+		Mode:                      ob.ModeOracle,
+		ServerVersion:             serverVersion,
+		SkipInitializeWithVersion: serverVersion == "",
+	}}
+	db, err := gorm.Open(dialector, &gorm.Config{DisableAutomaticPing: true})
+	if err != nil {
+		t.Fatalf("gorm.Open: %v", err)
+	}
+	return db, pool
+}
+
+func TestOracleHasTableAndColumn(t *testing.T) {
+	db, pool := openOracleArticlesMigratorDB(t, testExplicitVersion)
+	pool.server.reply(oracleCurrentSchemaSQL, "U")
+	pool.server.reply(oracleHasTableSQL, "1")
+	pool.server.reply(oracleHasColumnSQL, "1")
+
+	migrator := db.Migrator()
+	if !migrator.HasTable(&oracleArticle{}) {
+		t.Fatal("HasTable must find the seeded table")
+	}
+	if !migrator.HasColumn(&oracleArticle{}, testColumnTitle) {
+		t.Fatal("HasColumn must resolve the field name to the column")
+	}
+
+	pool.server.reply(oracleHasTableSQL, "0")
+	pool.server.reply(oracleHasColumnSQL, "0")
+	if migrator.HasTable(&oracleArticle{}) {
+		t.Fatal("HasTable must report an empty dictionary")
+	}
+	if migrator.HasColumn(&oracleArticle{}, testColumnTitle) {
+		t.Fatal("HasColumn must report an empty dictionary")
+	}
+}
+
+func TestOracleGetTables(t *testing.T) {
+	db, pool := openOracleArticlesMigratorDB(t, testExplicitVersion)
+	pool.server.reply(oracleCurrentSchemaSQL, "U")
+	pool.server.reply(oracleGetTablesSQL, "ORACLE_ARTICLES")
+
+	tables, err := db.Migrator().GetTables()
+	if err != nil {
+		t.Fatalf("GetTables: %v", err)
+	}
+	if len(tables) != 1 || tables[0] != "ORACLE_ARTICLES" {
+		t.Fatalf("tables = %v, want ORACLE_ARTICLES", tables)
+	}
+}
+
+func TestOracleGetIndexes(t *testing.T) {
+	db, pool := openOracleArticlesMigratorDB(t, testExplicitVersion)
+	const ratingIndexName = "IDX_RATING"
+	pool.server.replyRows(oracleIndexSQL,
+		[]string{"INDEX_NAME", "UNIQUE_FLAG", "CONSTRAINT_TYPE", "COLUMN_NAME"},
+		[][]driver.Value{
+			{"SYS_C001", int64(1), "P", strings.ToUpper(testColumnRating)},
+			{ratingIndexName, int64(0), nil, strings.ToUpper(testColumnRating)},
+			{ratingIndexName, int64(0), nil, strings.ToUpper(testColumnTitle)},
+		},
+	)
+
+	indexes, err := db.Migrator().GetIndexes(&oracleArticle{})
+	if err != nil {
+		t.Fatalf("GetIndexes: %v", err)
+	}
+	if len(indexes) != 2 {
+		t.Fatalf("indexes = %d, want 2", len(indexes))
+	}
+	var pk, rating gorm.Index
+	for _, idx := range indexes {
+		switch idx.Name() {
+		case "SYS_C001":
+			pk = idx
+		case "IDX_RATING":
+			rating = idx
+		}
+	}
+	if pk == nil {
+		t.Fatal("the primary key index must be listed")
+	}
+	if isPK, ok := pk.PrimaryKey(); !ok || !isPK {
+		t.Fatalf("primary index flag = %v, %v; want true", isPK, ok)
+	}
+	if uni, ok := pk.Unique(); !ok || !uni {
+		t.Fatalf("primary index uniqueness = %v, %v; want unique", uni, ok)
+	}
+	if rating == nil {
+		t.Fatal("the rating index must be listed")
+	}
+	if isPK, _ := rating.PrimaryKey(); isPK {
+		t.Fatal("the rating index must not be primary")
+	}
+	if uni, ok := rating.Unique(); !ok || uni {
+		t.Fatalf("rating index uniqueness = %v, %v; want non-unique", uni, ok)
+	}
+	if len(rating.Columns()) != 2 || rating.Columns()[0] != strings.ToUpper(testColumnRating) || rating.Columns()[1] != strings.ToUpper(testColumnTitle) {
+		t.Fatalf("rating columns = %v", rating.Columns())
+	}
+}
+
+func TestOracleColumnTypes(t *testing.T) {
+	db, pool := openOracleArticlesMigratorDB(t, testExplicitVersion)
+	pool.server.replyRows(oracleColumnTypesSQL,
+		[]string{"COLUMN_NAME", "DATA_DEFAULT", "NULLABLE_FLAG", "DATA_TYPE", "CHAR_LENGTH", "DATA_PRECISION", "DATA_SCALE"},
+		[][]driver.Value{
+			{"ID", `"ISEQ$$_123456" ` + "\n", int64(0), "NUMBER", int64(0), int64(10), int64(0)},
+			{"TITLE", nil, int64(1), "VARCHAR2", int64(512), nil, nil},
+		},
+	)
+
+	columnTypes, err := db.Migrator().ColumnTypes(&oracleArticle{})
+	if err != nil {
+		t.Fatalf("ColumnTypes: %v", err)
+	}
+	if len(columnTypes) != 2 {
+		t.Fatalf("column types = %d, want 2", len(columnTypes))
+	}
+
+	id := columnTypes[0]
+	if id.Name() != "ID" {
+		t.Fatalf("first column = %s, want ID", id.Name())
+	}
+	if auto, ok := id.AutoIncrement(); !ok || !auto {
+		t.Fatalf("ID auto-increment = %v, %v; want true", auto, ok)
+	}
+	title := columnTypes[1]
+	if title.Name() != "TITLE" {
+		t.Fatalf("second column = %s, want TITLE", title.Name())
+	}
+	if nullable, ok := title.Nullable(); !ok || !nullable {
+		t.Fatalf("TITLE nullable = %v, %v; want true", nullable, ok)
+	}
+}
+
+func TestOracleCreateTableIdentityDDL(t *testing.T) {
+	db, pool := openOracleArticlesMigratorDB(t, "4.2.1.0")
+	pool.server.reply(oracleCurrentSchemaSQL, "U")
+	pool.server.reply(oracleHasTableSQL, "0")
+
+	if err := db.Migrator().CreateTable(&oracleArticle{}); err != nil {
+		t.Fatalf("CreateTable: %v", err)
+	}
+	exec := pool.server.recordedExecs()
+	if !containsExec(exec, `CREATE TABLE "ORACLE_ARTICLES"`) {
+		t.Fatalf("execs = %v, want the CREATE TABLE", exec)
+	}
+	if !containsExec(exec, `GENERATED BY DEFAULT AS IDENTITY`) {
+		t.Fatalf("execs = %v, want the IDENTITY clause on the primary key", exec)
+	}
+}
+
+func TestOracleCreateTableIdentityRefusedForUnknownVersion(t *testing.T) {
+	// SkipInitializeWithVersion leaves the server version unknown: the IDENTITY
+	// DDL must be refused before any statement executes.
+	db, pool := openOracleArticlesMigratorDB(t, "")
+
+	err := db.Migrator().CreateTable(&oracleArticle{})
+	if !errors.Is(err, ErrIdentityUnsupported) {
+		t.Fatalf("err = %v, want ErrIdentityUnsupported", err)
+	}
+	if len(pool.server.recordedExecs()) != 0 {
+		t.Fatalf("execs = %v, want no DDL before the version check", pool.server.recordedExecs())
+	}
+}
+
+func TestOracleDropTableSkipsMissingTables(t *testing.T) {
+	db, pool := openOracleArticlesMigratorDB(t, testExplicitVersion)
+	pool.server.reply(oracleCurrentSchemaSQL, "U")
+	pool.server.reply(oracleHasTableSQL, "1")
+
+	if err := db.Migrator().DropTable(&oracleArticle{}); err != nil {
+		t.Fatalf("DropTable: %v", err)
+	}
+	if !containsExec(pool.server.recordedExecs(), `DROP TABLE "ORACLE_ARTICLES" CASCADE CONSTRAINTS`) {
+		t.Fatalf("execs = %v, want the DROP TABLE", pool.server.recordedExecs())
+	}
+
+	pool.server.reply(oracleHasTableSQL, "0")
+	before := len(pool.server.recordedExecs())
+	if err := db.Migrator().DropTable(&oracleArticle{}); err != nil {
+		t.Fatalf("DropTable on missing table: %v", err)
+	}
+	if len(pool.server.recordedExecs()) != before {
+		t.Fatal("a missing table must not run a DROP statement")
+	}
+}
