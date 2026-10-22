@@ -227,6 +227,24 @@ func buildOracleUpserts(db *gorm.DB) []oracleInsertSQL {
 			}
 		}
 	}
+	// Explicit assignments reading a column the row does not provide cannot
+	// apply; refusing beats silently dropping the semantics (design.md §5.3.3).
+	// UpdateAll assignments are auto-expanded over the batch's union columns,
+	// so per-row skipping stays valid for them.
+	if !oc.UpdateAll {
+		for i := range rows {
+			if rows[i].generate {
+				continue
+			}
+			for _, assignment := range oc.DoUpdates {
+				if col, ok := assignment.Value.(clause.Column); ok && col.Table == excludedTable &&
+					!oracleRowHasColumn(rows[i].columns, col.Name) {
+					_ = db.AddError(fmt.Errorf("%w: assignment column %q is not provided by every row", ErrUpsertUnsupported, col.Name))
+					return nil
+				}
+			}
+		}
+	}
 
 	pkField := oracleGeneratedPKField(stmt)
 	ins := oracleInsertClause(stmt)
@@ -384,9 +402,10 @@ func writeOracleMerge(stmt *gorm.Statement, ins clause.Insert, oc clause.OnConfl
 }
 
 // oracleUpsertAssignments resolves the update branch for one row. UpdateAll
-// was already expanded into DoUpdates by ConvertToCreateValues; assignments
-// reading a column the row does not provide are skipped so batch rows with
-// narrower column sets stay valid.
+// was already expanded into DoUpdates by ConvertToCreateValues over the
+// batch's union columns, so only those auto-generated assignments may be
+// skipped for rows providing a narrower column set; explicit assignments
+// missing a column were rejected before any DML.
 func oracleUpsertAssignments(oc clause.OnConflict, row oracleUpsertRow) clause.Set {
 	if oc.DoNothing {
 		return nil
@@ -598,6 +617,8 @@ func writeOracleInsert(stmt *gorm.Statement, ins clause.Insert, g oracleInsertGr
 
 	writeString(stmt, "INSERT ALL")
 	for _, row := range g.rows {
+		// Oracle's INSERT ALL carries no statement modifier; ins.Modifier is
+		// intentionally not rendered on this branch.
 		writeString(stmt, " INTO ")
 		stmt.WriteQuoted(oracleInsertTable(ins))
 		writeOracleValues(stmt, g.columns, row)

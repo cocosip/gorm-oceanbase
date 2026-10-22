@@ -1099,3 +1099,35 @@ func TestOracleDropTableSkipsMissingTables(t *testing.T) {
 		t.Fatal("a missing table must not run a DROP statement")
 	}
 }
+
+func TestOracleUpsertRejectsExplicitAssignmentMissingColumn(t *testing.T) {
+	db, pool := openOracleArticlesDB(t)
+
+	// The explicit assignment reads RATING, but the row omits it (zero value
+	// on the default-tagged field): refuse before any DML instead of dropping
+	// the assignment silently (design.md §5.3.3).
+	err := db.Clauses(clause.OnConflict{
+		DoUpdates: clause.AssignmentColumns([]string{testColumnRating}),
+	}).Create(&oracleArticle{ID: 7, Title: "x"}).Error
+	if !errors.Is(err, ErrUpsertUnsupported) {
+		t.Fatalf("err = %v, want ErrUpsertUnsupported", err)
+	}
+	if len(pool.server.recordedExecs()) != 0 {
+		t.Fatal("the batch must be rejected before any DML")
+	}
+}
+
+func TestOracleUpsertUpdateAllHeterogeneousRows(t *testing.T) {
+	db, pool := openOracleArticlesDB(t)
+
+	// UpdateAll assignments are auto-expanded over the batch's union columns;
+	// rows providing a narrower set keep a valid MERGE without the missing
+	// assignment.
+	articles := []oracleArticle{{ID: 1, Title: "a"}, {ID: 2, Title: "b", Rating: 3}}
+	if err := db.Clauses(clause.OnConflict{UpdateAll: true}).Create(&articles).Error; err != nil {
+		t.Fatalf("Create slice: %v", err)
+	}
+	if merges := len(pool.server.recordedExecs()); merges != 2 {
+		t.Fatalf("execs = %d, want one MERGE per row", merges)
+	}
+}
