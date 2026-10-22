@@ -1,0 +1,97 @@
+name: CI
+
+on:
+  push:
+    branches: [master, main, develop]
+    tags: ['v*']
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.event_name }}-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: ${{ github.event_name != 'workflow_dispatch' }}
+
+env:
+  GOTOOLCHAIN: local
+
+jobs:
+  test:
+    name: Test (${{ matrix.os }}, Go ${{ matrix.go }})
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 20
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, windows-latest, macos-latest]
+        go: ['1.26.x']
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-go@v7
+        with:
+          go-version: ${{ matrix.go }}
+          cache: true
+      - name: Show toolchain
+        run: go version
+      - name: Download dependencies
+        run: go mod download
+      - name: Verify dependencies
+        run: go mod verify
+      - name: Build packages
+        run: go build ./...
+      - name: Vet
+        run: go vet ./...
+      - name: Compile integration tests without a database
+        run: go test -tags=integration ./... -run '^$' -timeout 1m
+      - name: Unit tests with coverage
+        # The dialect is pure Go; CGO_ENABLED=0 keeps that promise checked on
+        # every runner. The coverprofile value stays quoted because PowerShell
+        # splits an unquoted -flag=value.ext at the dot.
+        run: go test "-coverprofile=coverage.out" -covermode=atomic ./... -count=1 -timeout 5m
+        env:
+          CGO_ENABLED: '0'
+      - name: Upload coverage
+        if: ${{ !cancelled() }}
+        uses: actions/upload-artifact@v7
+        with:
+          name: coverage-${{ matrix.os }}-go${{ matrix.go }}
+          path: coverage.out
+          if-no-files-found: warn
+          retention-days: 14
+
+  lint:
+    name: Lint (${{ matrix.os }}, Go ${{ matrix.go }})
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 15
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, windows-latest]
+        go: ['1.26.x']
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-go@v7
+        with:
+          go-version: ${{ matrix.go }}
+          cache: true
+      - name: Check formatting and module files
+        if: runner.os == 'Linux'
+        shell: bash
+        run: |
+          files=$(git ls-files -z '*.go' | xargs -0 gofmt -l)
+          if [ -n "$files" ]; then
+            printf 'Run gofmt on:\n%s\n' "$files"
+            exit 1
+          fi
+          go mod tidy -diff
+      - name: Check GitHub Actions workflows
+        if: runner.os == 'Linux'
+        run: go run github.com/rhysd/actionlint/cmd/actionlint@v1.7.12 -color
+      - uses: golangci/golangci-lint-action@v9
+        with:
+          version: v2.14.0
+          args: --timeout=10m
+      - name: Lint integration test sources without a database
+        run: golangci-lint run --build-tags=integration ./...
