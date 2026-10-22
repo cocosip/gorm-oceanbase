@@ -402,8 +402,8 @@ func TestOracleCreateMapNilAndExprNull(t *testing.T) {
 	db, pool := openOracleArticlesDB(t)
 
 	if err := db.Model(&oracleArticle{}).Create(map[string]interface{}{
-		"rating": 5,
-		"title":  nil,
+		testColumnRating: 5,
+		testColumnTitle:  nil,
 	}).Error; err != nil {
 		t.Fatalf("Create map: %v", err)
 	}
@@ -414,8 +414,8 @@ func TestOracleCreateMapNilAndExprNull(t *testing.T) {
 	}
 
 	if err := db.Model(&oracleArticle{}).Create(map[string]interface{}{
-		"title":  "x",
-		"rating": gorm.Expr("NULL"),
+		testColumnTitle:  "x",
+		testColumnRating: gorm.Expr("NULL"),
 	}).Error; err != nil {
 		t.Fatalf("Create map with expr: %v", err)
 	}
@@ -510,14 +510,18 @@ func TestOracleCreateEmptySliceErrors(t *testing.T) {
 	}
 }
 
-func TestOracleCreateRejectsOnConflict(t *testing.T) {	db, pool := openOracleArticlesDB(t)
+func TestOracleUpsertGeneratePathRejectedBeforeReturning(t *testing.T) {
+	db, pool := openOracleArticlesDB(t)
 
-	err := db.Clauses(clause.OnConflict{DoNothing: true}).Create(&oracleArticle{Title: "x"}).Error
+	// A new record (zero primary key) upserted by that key belongs to the
+	// INSERT RETURNING path; until it lands the request is refused before any
+	// DML instead of guessing an insert-or-update.
+	err := db.Clauses(clause.OnConflict{UpdateAll: true}).Create(&oracleArticle{Title: "x"}).Error
 	if !errors.Is(err, ErrUpsertUnsupported) {
 		t.Fatalf("err = %v, want ErrUpsertUnsupported", err)
 	}
 	if len(pool.server.recordedExecs()) != 0 {
-		t.Fatal("the batch must be rejected before any DML")
+		t.Fatal("the generate path must be refused before any DML")
 	}
 }
 
@@ -555,5 +559,189 @@ func TestOracleDryRunCreateMultiGroupSQL(t *testing.T) {
 		"INSERT INTO \"ORACLE_ARTICLES\" (\"TITLE\") VALUES (?)"
 	if sql != want {
 		t.Fatalf("dry run SQL = %q, want %q", sql, want)
+	}
+}
+
+func TestOracleUpsertMergeUpdateAllSQL(t *testing.T) {
+	db, _ := openOracleArticlesDB(t)
+
+	sql := db.Session(&gorm.Session{DryRun: true}).
+		Clauses(clause.OnConflict{UpdateAll: true}).
+		Create(&oracleArticle{ID: 7, Title: "x", Rating: 5}).Statement.SQL.String()
+
+	want := `MERGE INTO "ORACLE_ARTICLES" USING (SELECT ? "TITLE", ? "RATING", ? "ID" FROM DUAL) S ` +
+		`ON ("S"."ID" = "ORACLE_ARTICLES"."ID") ` +
+		`WHEN MATCHED THEN UPDATE SET "ORACLE_ARTICLES"."TITLE" = "S"."TITLE" ` +
+		`WHEN NOT MATCHED THEN INSERT ("TITLE","RATING","ID") VALUES ("S"."TITLE", "S"."RATING", "S"."ID")`
+	if sql != want {
+		t.Fatalf("merge SQL = %q, want %q", sql, want)
+	}
+}
+
+func TestOracleUpsertMergeDoNothingSQL(t *testing.T) {
+	db, _ := openOracleArticlesDB(t)
+
+	sql := db.Session(&gorm.Session{DryRun: true}).
+		Clauses(clause.OnConflict{DoNothing: true}).
+		Create(&oracleArticle{ID: 7, Title: "x"}).Statement.SQL.String()
+
+	want := `MERGE INTO "ORACLE_ARTICLES" USING (SELECT ? "TITLE", ? "ID" FROM DUAL) S ` +
+		`ON ("S"."ID" = "ORACLE_ARTICLES"."ID") ` +
+		`WHEN NOT MATCHED THEN INSERT ("TITLE","ID") VALUES ("S"."TITLE", "S"."ID")`
+	if sql != want {
+		t.Fatalf("merge SQL = %q, want %q", sql, want)
+	}
+}
+
+func TestOracleUpsertMergeDoUpdatesSQL(t *testing.T) {
+	db, _ := openOracleArticlesDB(t)
+
+	sql := db.Session(&gorm.Session{DryRun: true}).
+		Clauses(clause.OnConflict{
+			Columns:   []clause.Column{{Name: "id"}},
+			DoUpdates: clause.AssignmentColumns([]string{testColumnTitle}),
+		}).
+		Create(&oracleArticle{ID: 7, Title: testUpdatedTitle}).Statement.SQL.String()
+
+	want := `MERGE INTO "ORACLE_ARTICLES" USING (SELECT ? "TITLE", ? "ID" FROM DUAL) S ` +
+		`ON ("S"."ID" = "ORACLE_ARTICLES"."ID") ` +
+		`WHEN MATCHED THEN UPDATE SET "ORACLE_ARTICLES"."TITLE" = "S"."TITLE" ` +
+		`WHEN NOT MATCHED THEN INSERT ("TITLE","ID") VALUES ("S"."TITLE", "S"."ID")`
+	if sql != want {
+		t.Fatalf("merge SQL = %q, want %q", sql, want)
+	}
+}
+
+func TestOracleUpsertMergeConstantAssignmentSQL(t *testing.T) {
+	db, _ := openOracleArticlesDB(t)
+
+	sql := db.Session(&gorm.Session{DryRun: true}).
+		Clauses(clause.OnConflict{
+			DoUpdates: []clause.Assignment{{Column: clause.Column{Name: testColumnTitle}, Value: "fixed"}},
+		}).
+		Create(&oracleArticle{ID: 7, Title: testUpdatedTitle}).Statement.SQL.String()
+
+	want := `MERGE INTO "ORACLE_ARTICLES" USING (SELECT ? "TITLE", ? "ID" FROM DUAL) S ` +
+		`ON ("S"."ID" = "ORACLE_ARTICLES"."ID") ` +
+		`WHEN MATCHED THEN UPDATE SET "ORACLE_ARTICLES"."TITLE" = ? ` +
+		`WHEN NOT MATCHED THEN INSERT ("TITLE","ID") VALUES ("S"."TITLE", "S"."ID")`
+	if sql != want {
+		t.Fatalf("merge SQL = %q, want %q", sql, want)
+	}
+}
+
+func TestOracleUpsertExplicitNonPrimaryKeyTarget(t *testing.T) {
+	db, _ := openOracleArticlesDB(t)
+
+	sql := db.Session(&gorm.Session{DryRun: true}).
+		Clauses(clause.OnConflict{
+			Columns:   []clause.Column{{Name: testColumnTitle}},
+			DoNothing: true,
+		}).
+		Create(&oracleArticle{ID: 7, Title: "dup"}).Statement.SQL.String()
+
+	if !strings.Contains(sql, `ON ("S"."TITLE" = "ORACLE_ARTICLES"."TITLE")`) {
+		t.Fatalf("merge SQL must match on the explicit target, got %q", sql)
+	}
+}
+
+func TestOracleUpsertBatchRunsOneMergePerRow(t *testing.T) {
+	db, pool := openOracleArticlesDB(t)
+
+	articles := []oracleArticle{{ID: 1, Title: "a"}, {ID: 2, Title: "b"}}
+	if err := db.Clauses(clause.OnConflict{DoNothing: true}).Create(&articles).Error; err != nil {
+		t.Fatalf("Create slice: %v", err)
+	}
+	merges := 0
+	for _, exec := range pool.server.recordedExecs() {
+		if strings.HasPrefix(exec, "MERGE INTO ") {
+			merges++
+		}
+	}
+	if merges != 2 {
+		t.Fatalf("merges = %d, want one per row", merges)
+	}
+}
+
+func TestOracleUpsertRejectsOnColumnUpdate(t *testing.T) {
+	db, pool := openOracleArticlesDB(t)
+
+	err := db.Clauses(clause.OnConflict{
+		DoUpdates: clause.AssignmentColumns([]string{"id", testColumnTitle}),
+	}).Create(&oracleArticle{ID: 7, Title: "x"}).Error
+	if !errors.Is(err, ErrUpsertUnsupported) {
+		t.Fatalf("err = %v, want ErrUpsertUnsupported", err)
+	}
+	if len(pool.server.recordedExecs()) != 0 {
+		t.Fatal("the batch must be rejected before any DML")
+	}
+}
+
+func TestOracleUpsertRejectsConditionalShapes(t *testing.T) {
+	cases := []struct {
+		name   string
+		clause clause.OnConflict
+	}{
+		{
+			name:   "on constraint",
+			clause: clause.OnConflict{OnConstraint: "uni_title", DoNothing: true},
+		},
+		{
+			name: "target where",
+			clause: clause.OnConflict{
+				TargetWhere: clause.Where{Exprs: []clause.Expression{clause.Eq{Column: clause.Column{Name: "region"}, Value: "cn"}}},
+				DoNothing:   true,
+			},
+		},
+		{
+			name: "update where",
+			clause: clause.OnConflict{
+				DoUpdates: clause.AssignmentColumns([]string{testColumnTitle}),
+				Where:     clause.Where{Exprs: []clause.Expression{clause.Eq{Column: clause.Column{Name: testColumnRating}, Value: 5}}},
+			},
+		},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			db, pool := openOracleArticlesDB(t)
+			err := db.Clauses(tc.clause).Create(&oracleArticle{ID: 7, Title: "x"}).Error
+			if !errors.Is(err, ErrUpsertUnsupported) {
+				t.Fatalf("err = %v, want ErrUpsertUnsupported", err)
+			}
+			if len(pool.server.recordedExecs()) != 0 {
+				t.Fatal("the batch must be rejected before any DML")
+			}
+		})
+	}
+}
+
+func TestOracleUpsertMixedPrimaryKeysSplitRejectedAsWhole(t *testing.T) {
+	db, pool := openOracleArticlesDB(t)
+
+	// The first row is MERGE-able, the second needs the generated key path:
+	// the whole batch is validated first, so nothing executes.
+	articles := []oracleArticle{{ID: 1, Title: "old"}, {Title: testUpdatedTitle}}
+	err := db.Clauses(clause.OnConflict{DoNothing: true}).Create(&articles).Error
+	if !errors.Is(err, ErrUpsertUnsupported) {
+		t.Fatalf("err = %v, want ErrUpsertUnsupported", err)
+	}
+	if len(pool.server.recordedExecs()) != 0 {
+		t.Fatal("validation must complete before any DML")
+	}
+}
+
+func TestOracleUpsertWithoutTargetErrors(t *testing.T) {
+	db, pool := openOracleArticlesDB(t)
+
+	type oracleNoPK struct {
+		Title string
+	}
+	err := db.Clauses(clause.OnConflict{DoNothing: true}).Create(&oracleNoPK{Title: "x"}).Error
+	if !errors.Is(err, ErrUpsertUnsupported) {
+		t.Fatalf("err = %v, want ErrUpsertUnsupported", err)
+	}
+	if len(pool.server.recordedExecs()) != 0 {
+		t.Fatal("no DML may run without a conflict target")
 	}
 }

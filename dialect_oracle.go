@@ -41,10 +41,10 @@ type oracleInsertGroup struct {
 
 // createOracle replaces gorm:create for Oracle compatibility mode. It reads
 // the VALUES clause context, validates the whole batch, then builds and
-// executes one INSERT or INSERT ALL per adjacent same-column group. Missing
-// database-default fields are omitted from the column list; explicit NULL is
-// preserved as a bound NULL. Generated primary keys are handled by the Oracle
-// RETURNING support task (design.md §5.3, §6).
+// executes one INSERT or INSERT ALL per adjacent same-column group, or one
+// MERGE per row when an ON CONFLICT clause is present. Missing database-default
+// fields are omitted from the column list; explicit NULL is preserved as a
+// bound NULL (design.md §5.3).
 func createOracle(db *gorm.DB) {
 	if db.Error != nil {
 		return
@@ -57,56 +57,323 @@ func createOracle(db *gorm.DB) {
 		}
 	}
 
-	if _, ok := stmt.Clauses["ON CONFLICT"]; ok {
-		_ = db.AddError(fmt.Errorf("%w: ON CONFLICT needs the Oracle MERGE path", ErrUpsertUnsupported))
-		return
+	var built []oracleInsertSQL
+	switch {
+	case stmt.SQL.Len() != 0:
+		// A plugin or caller already built the statement; execute it as-is.
+		built = []oracleInsertSQL{{sql: stmt.SQL.String(), vars: stmt.Vars}}
+	case hasOracleOnConflict(stmt):
+		built = buildOracleUpserts(db)
+	default:
+		built = buildOraclePlainInserts(db)
+	}
+	execOracleInserts(db, built)
+}
+
+func hasOracleOnConflict(stmt *gorm.Statement) bool {
+	_, ok := stmt.Clauses["ON CONFLICT"]
+	return ok
+}
+
+// buildOraclePlainInserts converts the create values into INSERT / INSERT ALL
+// statements for the batches without an upsert clause.
+func buildOraclePlainInserts(db *gorm.DB) []oracleInsertSQL {
+	stmt := db.Statement
+	values := callbacks.ConvertToCreateValues(stmt)
+	if db.Error != nil {
+		return nil
+	}
+	groups := groupOracleInsertRows(values)
+	if len(groups) == 0 {
+		// Every column of the record falls back to a database default; render
+		// the single-column DEFAULT form instead of nothing.
+		if field := firstOracleDefaultField(stmt); field != nil {
+			groups = []oracleInsertGroup{{
+				columns:    []clause.Column{{Name: field.DBName}},
+				rows:       [][]interface{}{{oracleDefaultMarker{}}},
+				sourceRows: []int{0},
+			}}
+		} else {
+			_ = db.AddError(gorm.ErrInvalidData)
+			return nil
+		}
 	}
 
-	built := make([]oracleInsertSQL, 0, 2)
-	if stmt.SQL.Len() != 0 {
-		// A plugin or caller already built the statement; execute it as-is.
-		built = append(built, oracleInsertSQL{sql: stmt.SQL.String(), vars: stmt.Vars})
-	} else {
-		values := callbacks.ConvertToCreateValues(stmt)
-		if db.Error != nil {
-			return
-		}
-		groups := groupOracleInsertRows(values)
-		if len(groups) == 0 {
-			// Every column of the record falls back to a database default;
-			// render the single-column DEFAULT form instead of nothing.
-			if field := firstOracleDefaultField(stmt); field != nil {
-				groups = []oracleInsertGroup{{
-					columns:    []clause.Column{{Name: field.DBName}},
-					rows:       [][]interface{}{{oracleDefaultMarker{}}},
-					sourceRows: []int{0},
-				}}
-			} else {
-				_ = db.AddError(gorm.ErrInvalidData)
-				return
-			}
-		}
+	built := make([]oracleInsertSQL, 0, len(groups))
+	for _, g := range groups {
+		ins := oracleInsertClause(stmt)
+		stmt.SQL = strings.Builder{}
+		stmt.Vars = make([]interface{}, 0, len(g.columns)*len(g.rows))
+		writeOracleInsert(stmt, ins, g)
+		built = append(built, oracleInsertSQL{
+			sql:  stmt.SQL.String(),
+			vars: append([]interface{}(nil), stmt.Vars...),
+		})
+	}
+	return built
+}
 
-		for _, g := range groups {
-			ins := clause.Insert{}
-			if c, ok := stmt.Clauses["INSERT"]; ok {
-				if userIns, ok := c.Expression.(clause.Insert); ok {
-					ins = userIns
-				}
-			}
-			stmt.SQL = strings.Builder{}
-			stmt.Vars = make([]interface{}, 0, len(g.columns)*len(g.rows))
-			writeOracleInsert(stmt, ins, g)
-			built = append(built, oracleInsertSQL{
-				sql:  stmt.SQL.String(),
-				vars: append([]interface{}(nil), stmt.Vars...),
-			})
+// oracleInsertClause reads an explicit INSERT clause, if the caller set one.
+func oracleInsertClause(stmt *gorm.Statement) clause.Insert {
+	if c, ok := stmt.Clauses["INSERT"]; ok {
+		if ins, ok := c.Expression.(clause.Insert); ok {
+			return ins
 		}
+	}
+	return clause.Insert{}
+}
+
+// oracleUpsertRow is one row of an upsert batch with its effective column set
+// and the primary-key branching decision.
+type oracleUpsertRow struct {
+	columns  []clause.Column
+	values   []interface{}
+	generate bool
+}
+
+// buildOracleUpserts validates the whole upsert batch, then builds one MERGE
+// statement per row. Rows whose only conflict target is their single missing
+// auto-generated primary key are flagged for the INSERT RETURNING path, which
+// is delivered by the Oracle primary key task (design.md §5.3, R14).
+func buildOracleUpserts(db *gorm.DB) []oracleInsertSQL {
+	stmt := db.Statement
+	// ConvertToCreateValues also expands UpdateAll into DoUpdates assignments.
+	values := callbacks.ConvertToCreateValues(stmt)
+	if db.Error != nil {
+		return nil
+	}
+	c, ok := stmt.Clauses["ON CONFLICT"]
+	oc, isOC := c.Expression.(clause.OnConflict)
+	if !ok || !isOC {
+		_ = db.AddError(gorm.ErrInvalidData)
+		return nil
+	}
+
+	target, err := oracleConflictTarget(stmt, oc)
+	if err != nil {
+		_ = db.AddError(err)
+		return nil
+	}
+	if err := validateOracleOnConflict(oc, target); err != nil {
+		_ = db.AddError(err)
+		return nil
+	}
+
+	rows := make([]oracleUpsertRow, 0, len(values.Values))
+	for _, row := range values.Values {
+		upsertRow := oracleUpsertRow{}
+		for idx, v := range row {
+			if _, isMarker := v.(oracleDefaultMarker); isMarker {
+				continue
+			}
+			upsertRow.columns = append(upsertRow.columns, values.Columns[idx])
+			upsertRow.values = append(upsertRow.values, v)
+		}
+		if len(upsertRow.columns) == 0 {
+			_ = db.AddError(fmt.Errorf("%w: upsert row without columns", gorm.ErrInvalidData))
+			return nil
+		}
+		upsertRow.generate = oracleRowGeneratesPK(stmt, target, upsertRow.columns)
+		rows = append(rows, upsertRow)
+	}
+
+	// Every row is validated before the batch executes any DML.
+	for i := range rows {
+		if rows[i].generate {
+			continue
+		}
+		for _, tc := range target {
+			if !oracleRowHasColumn(rows[i].columns, tc.Name) {
+				_ = db.AddError(fmt.Errorf("%w: conflict target column %q is not provided by every row", ErrUpsertUnsupported, tc.Name))
+				return nil
+			}
+		}
+	}
+	for i := range rows {
+		if rows[i].generate {
+			_ = db.AddError(fmt.Errorf("%w: generated primary key upsert needs the INSERT RETURNING path", ErrUpsertUnsupported))
+			return nil
+		}
+	}
+
+	built := make([]oracleInsertSQL, 0, len(rows))
+	ins := oracleInsertClause(stmt)
+	for _, row := range rows {
+		stmt.SQL = strings.Builder{}
+		stmt.Vars = make([]interface{}, 0, 2*len(row.columns))
+		writeOracleMerge(stmt, ins, oc, target, row)
+		built = append(built, oracleInsertSQL{
+			sql:  stmt.SQL.String(),
+			vars: append([]interface{}(nil), stmt.Vars...),
+		})
+	}
+	return built
+}
+
+// oracleConflictTarget resolves the upsert match columns: explicit ON CONFLICT
+// columns, or the model's complete primary key.
+func oracleConflictTarget(stmt *gorm.Statement, oc clause.OnConflict) ([]clause.Column, error) {
+	if len(oc.Columns) > 0 {
+		target := make([]clause.Column, 0, len(oc.Columns))
+		for _, c := range oc.Columns {
+			if c.Name == "" {
+				return nil, fmt.Errorf("%w: empty conflict target column", ErrUpsertUnsupported)
+			}
+			target = append(target, clause.Column{Name: c.Name})
+		}
+		return target, nil
+	}
+	if stmt.Schema == nil || len(stmt.Schema.PrimaryFields) == 0 {
+		return nil, fmt.Errorf("%w: no conflict target columns and the model has no primary key", ErrUpsertUnsupported)
+	}
+	target := make([]clause.Column, 0, len(stmt.Schema.PrimaryFields))
+	for _, field := range stmt.Schema.PrimaryFields {
+		target = append(target, clause.Column{Name: field.DBName})
+	}
+	return target, nil
+}
+
+// validateOracleOnConflict rejects the upsert shapes the MERGE path cannot
+// serve in this delivery. Assignments touching the conflict target are
+// refused instead of silently dropped.
+func validateOracleOnConflict(oc clause.OnConflict, target []clause.Column) error {
+	if oc.OnConstraint != "" {
+		return fmt.Errorf("%w: ON CONSTRAINT targets are not supported by Oracle MERGE", ErrUpsertUnsupported)
+	}
+	if len(oc.TargetWhere.Exprs) > 0 {
+		return fmt.Errorf("%w: conditional conflict targets are not supported", ErrUpsertUnsupported)
+	}
+	if len(oc.Where.Exprs) > 0 {
+		return fmt.Errorf("%w: conditional upserts (WHERE on DO UPDATE) are not supported", ErrUpsertUnsupported)
+	}
+	for _, assignment := range oc.DoUpdates {
+		for _, tc := range target {
+			if assignment.Column.Name == tc.Name {
+				return fmt.Errorf("%w: updating conflict-target column %q is not supported", ErrUpsertUnsupported, tc.Name)
+			}
+		}
+	}
+	return nil
+}
+
+// oracleRowGeneratesPK reports whether the row must take the generated primary
+// key path: the conflict target is exactly the single auto-generated primary
+// key and the row leaves that key at its default (design.md §5.3.4).
+func oracleRowGeneratesPK(stmt *gorm.Statement, target []clause.Column, cols []clause.Column) bool {
+	if len(target) != 1 || stmt.Schema == nil || len(stmt.Schema.PrimaryFields) != 1 {
+		return false
+	}
+	pk := stmt.Schema.PrioritizedPrimaryField
+	if pk == nil || !pk.HasDefaultValue || pk.DBName != target[0].Name {
+		return false
+	}
+	return !oracleRowHasColumn(cols, pk.DBName)
+}
+
+func oracleRowHasColumn(cols []clause.Column, name string) bool {
+	for _, c := range cols {
+		if c.Name == name {
+			return true
+		}
+	}
+	return false
+}
+
+// writeOracleMerge renders one row as a MERGE statement with a source select
+// over DUAL. The update branch is omitted for DoNothing and for rows whose
+// assignments resolve to nothing.
+func writeOracleMerge(stmt *gorm.Statement, ins clause.Insert, oc clause.OnConflict, target []clause.Column, row oracleUpsertRow) {
+	table := ins.Table
+	if table.Name == "" {
+		table = clause.Table{Name: clause.CurrentTable}
+	}
+
+	writeString(stmt, "MERGE INTO ")
+	stmt.WriteQuoted(table)
+	writeString(stmt, " USING (SELECT ")
+	for i, value := range row.values {
+		if i > 0 {
+			writeString(stmt, ", ")
+		}
+		stmt.AddVar(stmt, value)
+		writeByte(stmt, ' ')
+		stmt.WriteQuoted(row.columns[i])
+	}
+	writeString(stmt, " FROM DUAL) S ON (")
+	for i, tc := range target {
+		if i > 0 {
+			writeString(stmt, " AND ")
+		}
+		stmt.WriteQuoted(clause.Column{Table: "s", Name: tc.Name})
+		writeString(stmt, " = ")
+		stmt.WriteQuoted(clause.Column{Table: table.Name, Name: tc.Name})
+	}
+	writeByte(stmt, ')')
+
+	if assignments := oracleUpsertAssignments(oc, row); len(assignments) > 0 {
+		writeString(stmt, " WHEN MATCHED THEN UPDATE SET ")
+		for i, assignment := range assignments {
+			if i > 0 {
+				writeString(stmt, ", ")
+			}
+			stmt.WriteQuoted(clause.Column{Table: table.Name, Name: assignment.Column.Name})
+			writeString(stmt, " = ")
+			if col, ok := assignment.Value.(clause.Column); ok && col.Table == excludedTable {
+				stmt.WriteQuoted(clause.Column{Table: "s", Name: col.Name})
+			} else {
+				stmt.AddVar(stmt, assignment.Value)
+			}
+		}
+	}
+
+	writeString(stmt, " WHEN NOT MATCHED THEN INSERT (")
+	for i, col := range row.columns {
+		if i > 0 {
+			writeByte(stmt, ',')
+		}
+		stmt.WriteQuoted(clause.Column{Name: col.Name})
+	}
+	writeString(stmt, ") VALUES (")
+	for i, col := range row.columns {
+		if i > 0 {
+			writeString(stmt, ", ")
+		}
+		stmt.WriteQuoted(clause.Column{Table: "s", Name: col.Name})
+	}
+	writeByte(stmt, ')')
+}
+
+// oracleUpsertAssignments resolves the update branch for one row. UpdateAll
+// was already expanded into DoUpdates by ConvertToCreateValues; assignments
+// reading a column the row does not provide are skipped so batch rows with
+// narrower column sets stay valid.
+func oracleUpsertAssignments(oc clause.OnConflict, row oracleUpsertRow) clause.Set {
+	if oc.DoNothing {
+		return nil
+	}
+	var out clause.Set
+	for _, assignment := range oc.DoUpdates {
+		if col, ok := assignment.Value.(clause.Column); ok && col.Table == excludedTable {
+			if !oracleRowHasColumn(row.columns, col.Name) {
+				continue
+			}
+		}
+		out = append(out, assignment)
+	}
+	return out
+}
+
+// execOracleInserts joins the built statements for a dry run, or executes them
+// in order and accumulates the affected row count.
+func execOracleInserts(db *gorm.DB, built []oracleInsertSQL) {
+	stmt := db.Statement
+	if db.Error != nil || len(built) == 0 {
+		return
 	}
 
 	if db.DryRun {
 		stmt.SQL = strings.Builder{}
-		mergedVars := make([]interface{}, 0, len(built))
+		mergedVars := make([]interface{}, 0, len(built)*2)
 		for i, b := range built {
 			if i > 0 {
 				stmt.SQL.WriteString(";\n")

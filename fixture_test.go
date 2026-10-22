@@ -20,4 +20,10 @@ const (
 	// testObjectTypeName is a named Oracle compatibility server type used in
 	// complex-type tag tests.
 	testObjectTypeName = "MY_OBJECT_T"
+	// testColumnTitle and testColumnRating are sample column keys for map
+	// create and upsert tests.
+	testColumnTitle  = "title"
+	testColumnRating = "rating"
+	// testUpdatedTitle is the upserted title value.
+	testUpdatedTitle = "new"
 )

@@ -19,6 +19,9 @@ const (
 	clauseLimit      = "LIMIT"
 	clauseOrderBy    = "ORDER BY"
 	clauseWhere      = "WHERE"
+
+	// excludedTable is the GORM pseudo table of an upsert row's new values.
+	excludedTable = "excluded"
 )
 
 // mysqlCreateClauses is the create clause set for MySQL compatibility mode.
@@ -81,7 +84,7 @@ func buildOnDuplicateKeyUpdate(c clause.Clause, builder clause.Builder) {
 		}
 		builder.WriteQuoted(assignment.Column)
 		writeByte(builder, '=')
-		if column, ok := assignment.Value.(clause.Column); ok && column.Table == "excluded" {
+		if column, ok := assignment.Value.(clause.Column); ok && column.Table == excludedTable {
 			column.Table = ""
 			writeString(builder, "VALUES(")
 			builder.WriteQuoted(column)
