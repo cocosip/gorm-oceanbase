@@ -5,6 +5,7 @@ import (
 	"strings"
 	"testing"
 
+	ob "github.com/cocosip/go-oceanbase"
 	"github.com/cocosip/go-oceanbase/dberrors"
 	"gorm.io/gorm"
 )
@@ -135,5 +136,59 @@ func TestQuoteToMySQL(t *testing.T) {
 		if builder.String() != tc.want {
 			t.Fatalf("mysqlQuoteTo(%q) = %q, want %q", tc.in, builder.String(), tc.want)
 		}
+	}
+}
+
+func TestTranslateOracleCodes(t *testing.T) {
+	d := &Dialector{Config: &Config{resolvedMode: ob.ModeOracle}}
+	cases := []struct {
+		name string
+		err  error
+		want error
+	}{
+		{name: "duplicate ORA-00001", err: &dberrors.Error{Code: 1}, want: gorm.ErrDuplicatedKey},
+		{name: "fk parent ORA-02291", err: &dberrors.Error{Code: 2291}, want: gorm.ErrForeignKeyViolated},
+		{name: "fk child ORA-02292", err: &dberrors.Error{Code: 2292}, want: gorm.ErrForeignKeyViolated},
+		{name: "other ORA code", err: &dberrors.Error{Code: 942}, want: nil},
+		{name: "mysql duplicate code untouched", err: &dberrors.Error{Code: 1062}, want: nil},
+		{name: "plain error", err: errors.New("boom"), want: nil},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			got := d.Translate(tc.err)
+			if tc.want == nil {
+				if got != tc.err {
+					t.Fatalf("Translate() = %v, want the original error", got)
+				}
+				return
+			}
+			if !errors.Is(got, tc.want) {
+				t.Fatalf("Translate() = %v, want %v", got, tc.want)
+			}
+		})
+	}
+}
+
+func TestTranslateTablesStayIsolatedPerMode(t *testing.T) {
+	mysqlDialector := &Dialector{Config: &Config{resolvedMode: ob.ModeMySQL}}
+	oracleDialector := &Dialector{Config: &Config{resolvedMode: ob.ModeOracle}}
+
+	// Code 1 is an ORA duplicate in Oracle mode and untouched in MySQL mode.
+	if got := oracleDialector.Translate(&dberrors.Error{Code: 1}); !errors.Is(got, gorm.ErrDuplicatedKey) {
+		t.Fatalf("oracle Translate(1) = %v, want ErrDuplicatedKey", got)
+	}
+	original := error(&dberrors.Error{Code: 1})
+	if got := mysqlDialector.Translate(original); got != original {
+		t.Fatalf("mysql Translate(1) = %v, want the original error", got)
+	}
+
+	// Code 1062 is a MySQL duplicate and untouched in Oracle mode.
+	if got := mysqlDialector.Translate(&dberrors.Error{Code: 1062}); !errors.Is(got, gorm.ErrDuplicatedKey) {
+		t.Fatalf("mysql Translate(1062) = %v, want ErrDuplicatedKey", got)
+	}
+	mysqlCode := error(&dberrors.Error{Code: 1062})
+	if got := oracleDialector.Translate(mysqlCode); got != mysqlCode {
+		t.Fatalf("oracle Translate(1062) = %v, want the original error", got)
 	}
 }
