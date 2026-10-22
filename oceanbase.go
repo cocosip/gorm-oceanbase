@@ -14,7 +14,6 @@ import (
 	"gorm.io/gorm"
 	"gorm.io/gorm/clause"
 	"gorm.io/gorm/logger"
-	"gorm.io/gorm/schema"
 )
 
 const (
@@ -39,6 +38,9 @@ var (
 	ErrInvalidConfiguration = errors.New("oceanbase: invalid configuration")
 	// ErrUnsupportedMode reports a mode this version of the dialect cannot serve.
 	ErrUnsupportedMode = errors.New("oceanbase: unsupported compatibility mode")
+	// ErrUpsertUnsupported reports an upsert request the Oracle create callback
+	// cannot serve; the semantics are never silently dropped (design.md §5.3).
+	ErrUpsertUnsupported = errors.New("oceanbase: upsert is not supported in Oracle mode")
 )
 
 // Config configures the OceanBase dialector. DSN, DSNConfig and Conn are
@@ -139,11 +141,6 @@ func (d *Dialector) nowFunc() func() time.Time {
 		step /= 10
 	}
 	return func() time.Time { return time.Now().Round(step) }
-}
-
-// DefaultValueOf implements gorm.Dialector.
-func (d *Dialector) DefaultValueOf(*schema.Field) clause.Expression {
-	return clause.Expr{SQL: "DEFAULT"}
 }
 
 // BindVarTo implements gorm.Dialector. The driver accepts positional

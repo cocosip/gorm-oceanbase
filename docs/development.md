@@ -2,9 +2,9 @@
 
 本文档基于 [design.md](design.md) 定义开发任务，直接通过各任务的状态列表示当前进度。
 
-**当前进度：已完成 17 / 32，进行中 6，未开始 9，受阻 0。下一项：G34 Oracle Create 与批量插入；M1 剩余 ◐ 项需真实数据库（G22）。**
+**当前进度：已完成 18 / 32，进行中 6，未开始 8，受阻 0。下一项：G35 MERGE upsert 与主键分流；M1 剩余 ◐ 项需真实数据库（G22）。**
 
-**本轮说明**：M2 G33 LIMIT 改写完成：Oracle 模式注册 `ClauseBuilders["LIMIT"]`，将 GORM LIMIT 子句渲染为 `OFFSET n ROWS FETCH FIRST m ROWS ONLY`（仅 LIMIT/仅 OFFSET/组合三种形态均有 DryRun 快照），绑定值仍用 `?` 占位符。`go build`、`go vet`、`go test ./...`、集成包无库编译与 golangci-lint 通过。真实租户语法验收归 G39。
+**本轮说明**：M2 G34 Oracle Create 与批量插入完成：替换 `gorm:create`，保留事务/hook/关联回调；回调消费 VALUES 上下文整句构建 `INSERT`/`INSERT ALL ... SELECT 1 FROM DUAL`，按相邻相同列集合分组、必要时逐条执行并保持输入顺序；表达式 `default:(...)` 零值经 Oracle 专用 DefaultValueOf 标记省略列（全默认行渲染单列 `VALUES (DEFAULT)`），字面量 `default:50` 按 GORM 约定绑定值并写回模型；map 存在 nil 保留显式绑定 NULL、`gorm.Expr("NULL")` 渲染字面量；ON CONFLICT 在任何 DML 前明确拒绝（G35 接管）；执行错误传播、默认事务回滚与 RowsAffected 累计有测试。fake 驱动补齐事务（BEGIN/COMMIT/ROLLBACK）与执行错误注入。`go build`、`go vet`、`go test ./...`、集成包无库编译与 golangci-lint 通过。生成主键路径接 G36。
 
 **维护规则**：
 
@@ -82,7 +82,7 @@
 | G31 | QuoteTo(Oracle) | 双引号 + 未加引号标识符大写化（R2）；区分显式大小写名称，覆盖结果列到模型字段的映射 | G30 | 单测：大小写/转义/扫描；G39 真实大小写验收 | ✅ |
 | G32 | DataTypeOf(Oracle) | Int64→NUMBER(19,0)、Uint64→NUMBER(20,0)；其余 NUMBER/VARCHAR2/CLOB/RAW/BLOB/TIMESTAMP；Object/Array 必须显式 SQL 类型 tag、服务器预处理；限定带时区 Scanner 路径（design.md §5.1/5.2） | G30 | 单测：映射、int64/uint64 极值、复杂类型推断负例与 tag 正例 | ✅ |
 | G33 | LIMIT 改写 | `ClauseBuilders["LIMIT"]` → `OFFSET n ROWS FETCH FIRST m ROWS ONLY` | G30 | DryRun 快照 | ✅ |
-| G34 | Oracle Create 与批量插入 | 替换 gorm:create，保留事务/hook/关联回调；整句构建 INSERT/INSERT ALL；default tag 零值与显式 NULL 按 GORM 输入形式区分；按相邻相同列集合批量，必要时逐条执行；为 G35/G36 保留逐行冲突目标与主键上下文（design.md §5.3） | G30, G31, G32 | 完整 SQL 快照无重复前缀；结构体默认值、map nil/NULL 表达式、不同列集合/输入顺序与执行错误用例；生成主键路径接 G36 | ☐ |
+| G34 | Oracle Create 与批量插入 | 替换 gorm:create，保留事务/hook/关联回调；整句构建 INSERT/INSERT ALL；default tag 零值与显式 NULL 按 GORM 输入形式区分；按相邻相同列集合批量，必要时逐条执行；为 G35/G36 保留逐行冲突目标与主键上下文（design.md §5.3） | G30, G31, G32 | 完整 SQL 快照无重复前缀；结构体默认值、map nil/NULL 表达式、不同列集合/输入顺序与执行错误用例；生成主键路径接 G36 | ✅ |
 | G35 | MERGE upsert 与主键分流 | 校验有效匹配列和唯一约束；UpdateAll 排除 ON 列，显式修改 ON 列拒绝，DoNothing 无更新分支；主键已提供/预分配时 MERGE；单列自动生成主键缺省且目标仅为主键时交 G36 INSERT RETURNING，不按子句来源判断；非主键目标且需生成回填时拒绝；当前回调批量先校验再写入（design.md §5.3、R14） | G34 | SQL 快照与 G39 集成：插入/更新/DoNothing、关联自动 ON CONFLICT、Save(slice) 与混合主键分流；不支持条件/ON 列更新及非主键生成请求在对应回调 DML 前拒绝；竞争错误不重试 | ☐ |
 | G36 | 生成主键与基础 RETURNING | IDENTITY 候选门槛 4.2.1 待真实验收、未知/低版本 DDL 前拒绝；单行 INSERT RETURNING INTO + sql.Out 回填，批量逐条回填；接 G35 主键目标分流，关联 ID 在外键/中间表写入前回填；序列 seq.NEXTVAL 预分配、autoIncrement:false；OracleMigrator 序列扩展（design.md §6） | G13, G32, G34, G35 | 模拟：不调用 LastInsertId、不重放；集成：IDENTITY/序列/显式主键、混合 ID、新建各类关联及 FullSaveAssociations、Save(slice)、外键/中间表引用、默认事务回滚与关闭事务后的错误 | ☐ |
 | G37 | Oracle Migrator | ALL_TAB_COLUMNS/ALL_CONSTRAINTS/ALL_INDEXES/ALL_CATALOG 查询；接 G36 的主键 DDL 与已验收版本门槛，未知/不支持版本在 DDL 前拒绝 IDENTITY | G31, G32, G36 | 集成：AutoMigrate 全流程，含主键 DDL 的允许/拒绝路径 | ☐ |

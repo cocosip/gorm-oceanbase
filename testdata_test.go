@@ -14,11 +14,13 @@ import (
 // fakeServer is the in-process server stand-in used by unit tests. It records
 // statements and answers exact-match queries from a reply table.
 type fakeServer struct {
-	mu      sync.Mutex
-	queries []string
-	execs   []string
-	replies map[string]fakeReply
-	pingErr error
+	mu         sync.Mutex
+	queries    []string
+	execs      []string
+	replies    map[string]fakeReply
+	execErrors map[string]error
+	txLog      []string
+	pingErr    error
 }
 
 type fakeReply struct {
@@ -47,6 +49,36 @@ func (f *fakeServer) replyRows(query string, columns []string, rows [][]driver.V
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	f.replies[query] = fakeReply{columns: columns, rows: rows}
+}
+
+// replyExecError fails exactly one exec statement.
+func (f *fakeServer) replyExecError(query string, err error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	if f.execErrors == nil {
+		f.execErrors = map[string]error{}
+	}
+	f.execErrors[query] = err
+}
+
+// recordedExecs returns a copy of the executed statements.
+func (f *fakeServer) recordedExecs() []string {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return append([]string(nil), f.execs...)
+}
+
+// recordedTx returns a copy of the transaction log (BEGIN/COMMIT/ROLLBACK).
+func (f *fakeServer) recordedTx() []string {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return append([]string(nil), f.txLog...)
+}
+
+func (f *fakeServer) logTx(event string) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.txLog = append(f.txLog, event)
 }
 
 func (f *fakeServer) replyError(query string, err error) {
@@ -97,24 +129,21 @@ func (p *fakePool) PrepareContext(ctx context.Context, query string) (*sql.Stmt,
 	return p.db.PrepareContext(ctx, query)
 }
 
+// BeginTx delegates to the fake database so GORM's default transaction
+// callbacks run against a real *sql.Tx over the fake driver.
+func (p *fakePool) BeginTx(ctx context.Context, opts *sql.TxOptions) (*sql.Tx, error) {
+	return p.db.BeginTx(ctx, opts)
+}
+
 func (p *fakePool) ExecContext(ctx context.Context, query string, args ...interface{}) (sql.Result, error) {
-	p.server.mu.Lock()
-	p.server.execs = append(p.server.execs, query)
-	p.server.mu.Unlock()
 	return p.db.ExecContext(ctx, query, args...)
 }
 
 func (p *fakePool) QueryContext(ctx context.Context, query string, args ...interface{}) (*sql.Rows, error) {
-	p.server.mu.Lock()
-	p.server.queries = append(p.server.queries, query)
-	p.server.mu.Unlock()
 	return p.db.QueryContext(ctx, query, args...)
 }
 
 func (p *fakePool) QueryRowContext(ctx context.Context, query string, args ...interface{}) *sql.Row {
-	p.server.mu.Lock()
-	p.server.queries = append(p.server.queries, query)
-	p.server.mu.Unlock()
 	return p.db.QueryRowContext(ctx, query, args...)
 }
 
@@ -147,13 +176,20 @@ func (c *fakeConn) Prepare(string) (driver.Stmt, error) {
 }
 func (c *fakeConn) Close() error { return nil }
 func (c *fakeConn) Begin() (driver.Tx, error) {
-	return nil, errors.New("fakeConn: Begin is not supported")
+	c.server.logTx("BEGIN")
+	return fakeTx{server: c.server}, nil
 }
 func (c *fakeConn) Ping(context.Context) error {
 	c.server.mu.Lock()
 	defer c.server.mu.Unlock()
 	return c.server.pingErr
 }
+
+// fakeTx records commit and rollback boundaries.
+type fakeTx struct{ server *fakeServer }
+
+func (t fakeTx) Commit() error   { t.server.logTx("COMMIT"); return nil }
+func (t fakeTx) Rollback() error { t.server.logTx("ROLLBACK"); return nil }
 
 func (c *fakeConn) QueryContext(_ context.Context, query string, _ []driver.NamedValue) (driver.Rows, error) {
 	reply := c.server.answer(query)
@@ -172,7 +208,11 @@ func (c *fakeConn) QueryContext(_ context.Context, query string, _ []driver.Name
 func (c *fakeConn) ExecContext(_ context.Context, query string, _ []driver.NamedValue) (driver.Result, error) {
 	c.server.mu.Lock()
 	c.server.execs = append(c.server.execs, query)
+	execErr := c.server.execErrors[query]
 	c.server.mu.Unlock()
+	if execErr != nil {
+		return nil, execErr
+	}
 	return fakeResult{}, nil
 }
 
@@ -208,6 +248,11 @@ func containsQuery(queries []string, substr string) bool {
 		}
 	}
 	return false
+}
+
+// containsExec reports whether any executed statement contains substr.
+func containsExec(execs []string, substr string) bool {
+	return containsQuery(execs, substr)
 }
 
 var (

@@ -13,6 +13,7 @@ import (
 	ob "github.com/cocosip/go-oceanbase"
 	obtypes "github.com/cocosip/go-oceanbase/types"
 	"gorm.io/gorm"
+	"gorm.io/gorm/clause"
 	"gorm.io/gorm/schema"
 )
 
@@ -317,5 +318,242 @@ func TestOracleComplexTypeNeedsTag(t *testing.T) {
 	}
 	if got := d.DataTypeOf(parsed.FieldsByDBName["tagged"]); got != testObjectTypeName {
 		t.Fatalf("tagged Object DataTypeOf() = %q, want %s", got, testObjectTypeName)
+	}
+}
+
+// oracleArticle is the shared create-callback model: an auto-increment style
+// integer primary key plus an expression default-tagged field, which takes the
+// database-default marker path.
+type oracleArticle struct {
+	ID     uint
+	Title  string
+	Rating int `gorm:"default:(50)"`
+}
+
+// oracleTaggedArticle uses a literal default tag, which GORM binds as a value.
+type oracleTaggedArticle struct {
+	ID     uint
+	Title  string
+	Rating int `gorm:"default:50"`
+}
+
+func openOracleArticlesDB(t *testing.T) (*gorm.DB, *fakePool) {
+	t.Helper()
+	db, _, pool := openOracleWithFakeDB(t)
+	return db, pool
+}
+
+func TestOracleCreateSingleRowSQL(t *testing.T) {
+	db, pool := openOracleArticlesDB(t)
+
+	article := oracleArticle{Title: "news", Rating: 8}
+	if err := db.Create(&article).Error; err != nil {
+		t.Fatalf("Create: %v", err)
+	}
+	wantExec := `INSERT INTO "ORACLE_ARTICLES" ("TITLE","RATING") VALUES (?,?)`
+	if !containsExec(pool.server.recordedExecs(), wantExec) {
+		t.Fatalf("execs = %v, want %q", pool.server.recordedExecs(), wantExec)
+	}
+}
+
+func TestOracleCreateLiteralDefaultBindsValue(t *testing.T) {
+	db, pool := openOracleArticlesDB(t)
+
+	article := oracleTaggedArticle{Title: "draft"}
+	if err := db.Create(&article).Error; err != nil {
+		t.Fatalf("Create: %v", err)
+	}
+	// A literal default tag binds the default value for a zero field and
+	// writes it back to the model (GORM convention).
+	wantExec := `INSERT INTO "ORACLE_TAGGED_ARTICLES" ("TITLE","RATING") VALUES (?,?)`
+	if !containsExec(pool.server.recordedExecs(), wantExec) {
+		t.Fatalf("execs = %v, want %q", pool.server.recordedExecs(), wantExec)
+	}
+	if article.Rating != 50 {
+		t.Fatalf("model Rating = %d, want the literal default 50", article.Rating)
+	}
+}
+
+func TestOracleCreateRunsInDefaultTransaction(t *testing.T) {
+	db, pool := openOracleArticlesDB(t)
+	if err := db.Create(&oracleArticle{Title: "news"}).Error; err != nil {
+		t.Fatalf("Create: %v", err)
+	}
+	tx := pool.server.recordedTx()
+	if len(tx) != 2 || tx[0] != "BEGIN" || tx[1] != "COMMIT" {
+		t.Fatalf("tx log = %v, want BEGIN then COMMIT", tx)
+	}
+}
+
+func TestOracleCreateOmitsZeroDefaultField(t *testing.T) {
+	db, pool := openOracleArticlesDB(t)
+
+	article := oracleArticle{Title: "draft"}
+	if err := db.Create(&article).Error; err != nil {
+		t.Fatalf("Create: %v", err)
+	}
+	wantExec := `INSERT INTO "ORACLE_ARTICLES" ("TITLE") VALUES (?)`
+	if !containsExec(pool.server.recordedExecs(), wantExec) {
+		t.Fatalf("execs = %v, want %q", pool.server.recordedExecs(), wantExec)
+	}
+}
+
+func TestOracleCreateMapNilAndExprNull(t *testing.T) {
+	db, pool := openOracleArticlesDB(t)
+
+	if err := db.Model(&oracleArticle{}).Create(map[string]interface{}{
+		"rating": 5,
+		"title":  nil,
+	}).Error; err != nil {
+		t.Fatalf("Create map: %v", err)
+	}
+	// Map keys render sorted; a present nil stays an explicit bound NULL.
+	wantExec := `INSERT INTO "ORACLE_ARTICLES" ("RATING","TITLE") VALUES (?,?)`
+	if !containsExec(pool.server.recordedExecs(), wantExec) {
+		t.Fatalf("execs = %v, want %q", pool.server.recordedExecs(), wantExec)
+	}
+
+	if err := db.Model(&oracleArticle{}).Create(map[string]interface{}{
+		"title":  "x",
+		"rating": gorm.Expr("NULL"),
+	}).Error; err != nil {
+		t.Fatalf("Create map with expr: %v", err)
+	}
+	wantExprExec := `INSERT INTO "ORACLE_ARTICLES" ("RATING","TITLE") VALUES (NULL,?)`
+	if !containsExec(pool.server.recordedExecs(), wantExprExec) {
+		t.Fatalf("execs = %v, want %q", pool.server.recordedExecs(), wantExprExec)
+	}
+}
+
+func TestOracleCreateBatchInsertAll(t *testing.T) {
+	db, pool := openOracleArticlesDB(t)
+
+	articles := []oracleArticle{{Title: "a"}, {Title: "b"}}
+	tx := db.Create(&articles)
+	if tx.Error != nil {
+		t.Fatalf("Create slice: %v", tx.Error)
+	}
+	wantExec := `INSERT ALL INTO "ORACLE_ARTICLES" ("TITLE") VALUES (?) INTO "ORACLE_ARTICLES" ("TITLE") VALUES (?) SELECT 1 FROM DUAL`
+	if !containsExec(pool.server.recordedExecs(), wantExec) {
+		t.Fatalf("execs = %v, want %q", pool.server.recordedExecs(), wantExec)
+	}
+	if tx.RowsAffected != 1 {
+		t.Fatalf("RowsAffected = %d, want the fake driver's per-statement 1", tx.RowsAffected)
+	}
+}
+
+func TestOracleCreateBatchDefaultMarkersOmitted(t *testing.T) {
+	db, pool := openOracleArticlesDB(t)
+
+	// Both rows leave the default-tagged field zero: the column is omitted for
+	// the whole INSERT ALL instead of being written as NULL.
+	articles := []oracleArticle{{Title: "a", Rating: 0}, {Title: "b", Rating: 0}}
+	if err := db.Create(&articles).Error; err != nil {
+		t.Fatalf("Create slice: %v", err)
+	}
+	wantExec := `INSERT ALL INTO "ORACLE_ARTICLES" ("TITLE") VALUES (?) INTO "ORACLE_ARTICLES" ("TITLE") VALUES (?) SELECT 1 FROM DUAL`
+	if !containsExec(pool.server.recordedExecs(), wantExec) {
+		t.Fatalf("execs = %v, want %q", pool.server.recordedExecs(), wantExec)
+	}
+	if containsExec(pool.server.recordedExecs(), `"RATING"`) {
+		t.Fatal("zero default field must not appear in the column list")
+	}
+}
+
+func TestOracleCreateMixedColumnSetsSplitStatements(t *testing.T) {
+	db, pool := openOracleArticlesDB(t)
+
+	// The first row provides the default-tagged field, the second does not:
+	// adjacent groups with different effective column sets run one by one.
+	articles := []oracleArticle{{Title: "a", Rating: 8}, {Title: "b"}}
+	if err := db.Create(&articles).Error; err != nil {
+		t.Fatalf("Create slice: %v", err)
+	}
+	exec := pool.server.recordedExecs()
+	if !containsExec(exec, `INSERT INTO "ORACLE_ARTICLES" ("TITLE","RATING") VALUES (?,?)`) {
+		t.Fatalf("execs = %v, want the rated insert", exec)
+	}
+	if !containsExec(exec, `INSERT INTO "ORACLE_ARTICLES" ("TITLE") VALUES (?)`) {
+		t.Fatalf("execs = %v, want the plain insert", exec)
+	}
+	if containsExec(exec, "INSERT ALL") {
+		t.Fatal("rows with different column sets must not batch into INSERT ALL")
+	}
+}
+
+func TestOracleCreateAllDefaultRow(t *testing.T) {
+	db, pool := openOracleArticlesDB(t)
+
+	// Every column falls back to a database default: the record renders the
+	// single-column DEFAULT form instead of an empty column list.
+	type oracleAllDefault struct {
+		ID     uint
+		Rating int `gorm:"default:(50)"`
+	}
+	if err := db.Create(&oracleAllDefault{}).Error; err != nil {
+		t.Fatalf("Create: %v", err)
+	}
+	wantExec := `INSERT INTO "ORACLE_ALL_DEFAULTS" ("RATING") VALUES (DEFAULT)`
+	if !containsExec(pool.server.recordedExecs(), wantExec) {
+		t.Fatalf("execs = %v, want %q", pool.server.recordedExecs(), wantExec)
+	}
+}
+
+func TestOracleCreateEmptySliceErrors(t *testing.T) {
+	db, pool := openOracleArticlesDB(t)
+
+	if err := db.Create(&[]oracleArticle{}).Error; !errors.Is(err, gorm.ErrEmptySlice) {
+		t.Fatalf("err = %v, want ErrEmptySlice", err)
+	}
+	if len(pool.server.recordedExecs()) != 0 {
+		t.Fatal("an empty slice must not execute any DML")
+	}
+}
+
+func TestOracleCreateRejectsOnConflict(t *testing.T) {	db, pool := openOracleArticlesDB(t)
+
+	err := db.Clauses(clause.OnConflict{DoNothing: true}).Create(&oracleArticle{Title: "x"}).Error
+	if !errors.Is(err, ErrUpsertUnsupported) {
+		t.Fatalf("err = %v, want ErrUpsertUnsupported", err)
+	}
+	if len(pool.server.recordedExecs()) != 0 {
+		t.Fatal("the batch must be rejected before any DML")
+	}
+}
+
+func TestOracleCreateExecErrorPropagatesAndRollsBack(t *testing.T) {
+	db, pool := openOracleArticlesDB(t)
+	pool.server.replyExecError(`INSERT INTO "ORACLE_ARTICLES" ("TITLE") VALUES (?)`, errors.New("unique constraint violated"))
+
+	articles := []oracleArticle{{Title: "a", Rating: 8}, {Title: "b"}}
+	tx := db.Create(&articles)
+	if tx.Error == nil {
+		t.Fatal("expected the execution error to propagate")
+	}
+	exec := pool.server.recordedExecs()
+	if !containsExec(exec, `INSERT INTO "ORACLE_ARTICLES" ("TITLE","RATING") VALUES (?,?)`) {
+		t.Fatalf("execs = %v, want the first group executed", exec)
+	}
+	if tx.RowsAffected != 1 {
+		t.Fatalf("RowsAffected = %d, want 1 from the first group", tx.RowsAffected)
+	}
+	tx2 := pool.server.recordedTx()
+	if len(tx2) != 2 || tx2[0] != "BEGIN" || tx2[1] != "ROLLBACK" {
+		t.Fatalf("tx log = %v, want BEGIN then ROLLBACK", tx2)
+	}
+}
+
+func TestOracleDryRunCreateMultiGroupSQL(t *testing.T) {
+	db, _ := openOracleArticlesDB(t)
+
+	sql := db.Session(&gorm.Session{DryRun: true}).Create(&[]oracleArticle{
+		{Title: "a", Rating: 8},
+		{Title: "b"},
+	}).Statement.SQL.String()
+
+	want := "INSERT INTO \"ORACLE_ARTICLES\" (\"TITLE\",\"RATING\") VALUES (?,?);\n" +
+		"INSERT INTO \"ORACLE_ARTICLES\" (\"TITLE\") VALUES (?)"
+	if sql != want {
+		t.Fatalf("dry run SQL = %q, want %q", sql, want)
 	}
 }
