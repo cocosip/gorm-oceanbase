@@ -3,7 +3,9 @@ package oceanbase
 import (
 	"context"
 	"database/sql"
+	"database/sql/driver"
 	"errors"
+	"strings"
 	"testing"
 	"time"
 
@@ -139,5 +141,84 @@ func TestAutoProbeErrorPropagates(t *testing.T) {
 	_, err := d.resolveDriverConfig()
 	if !errors.Is(err, ErrInvalidConfiguration) || !errors.Is(err, probeErr) {
 		t.Fatalf("err = %v, want ErrInvalidConfiguration wrapping the probe error", err)
+	}
+}
+
+func TestOracleQuoteTo(t *testing.T) {
+	d := dialectorWithMode(t, ob.ModeOracle)
+	quote := func(str string) string {
+		var sb strings.Builder
+		d.QuoteTo(&sb, str)
+		return sb.String()
+	}
+
+	cases := []struct {
+		name string
+		in   string
+		want string
+	}{
+		{name: "plain identifier", in: "users", want: `"USERS"`},
+		{name: "snake case", in: "created_at", want: `"CREATED_AT"`},
+		{name: "qualified", in: "users.id", want: `"USERS"."ID"`},
+		{name: "schema qualified", in: "db.users.id", want: `"DB"."USERS"."ID"`},
+		{name: "explicit case preserved", in: `"Foo"`, want: `"Foo"`},
+		{name: "explicit part keeps case, rest upper", in: `"Foo".bar`, want: `"Foo"."BAR"`},
+		{name: "embedded quote escaped", in: `a"b`, want: `"A""B"`},
+		{name: "empty identifier", in: "", want: `"`},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := quote(tc.in); got != tc.want {
+				t.Fatalf("QuoteTo(%q) = %q, want %q", tc.in, got, tc.want)
+			}
+		})
+	}
+}
+
+func TestOracleDryRunQuoting(t *testing.T) {
+	db, _, _ := openOracleWithFakeDB(t)
+	dry := db.Session(&gorm.Session{DryRun: true})
+
+	type oracleUser struct {
+		ID   uint   `gorm:"primaryKey"`
+		Name string `gorm:"size:64"`
+	}
+
+	createSQL := dry.Create(&oracleUser{Name: testUserName}).Statement.SQL.String()
+	if createSQL != `INSERT INTO "ORACLE_USERS" ("NAME") VALUES (?)` {
+		t.Fatalf("create SQL = %q", createSQL)
+	}
+
+	querySQL := dry.Model(&oracleUser{}).Where(`"NAME" = ?`, testUserName).Find(&[]oracleUser{}).Statement.SQL.String()
+	wantQuery := `SELECT * FROM "ORACLE_USERS" WHERE "NAME" = ?`
+	if querySQL != wantQuery {
+		t.Fatalf("query SQL = %q, want %q", querySQL, wantQuery)
+	}
+}
+
+func TestOracleScanMapsUppercaseColumns(t *testing.T) {
+	pool := newFakePool(t)
+	pool.server.reply("SELECT ob_version() FROM dual", testOBCEVersion)
+
+	type oracleRow struct {
+		Name string `gorm:"size:64"`
+	}
+
+	db, err := gorm.Open(&Dialector{Config: &Config{Conn: pool, Mode: ob.ModeOracle}}, &gorm.Config{DisableAutomaticPing: true})
+	if err != nil {
+		t.Fatalf("gorm.Open: %v", err)
+	}
+
+	selectSQL := db.Session(&gorm.Session{DryRun: true}).
+		Model(&oracleRow{}).Where(`"NAME" = ?`, testUserName).Find(&[]oracleRow{}).Statement.SQL.String()
+	pool.server.replyRows(selectSQL, []string{"NAME"}, [][]driver.Value{{testUserName}})
+
+	var rows []oracleRow
+	if err := db.Model(&oracleRow{}).Where(`"NAME" = ?`, testUserName).Find(&rows).Error; err != nil {
+		t.Fatalf("Find: %v", err)
+	}
+	if len(rows) != 1 || rows[0].Name != testUserName {
+		t.Fatalf("scan result = %+v, want one row named alice", rows)
 	}
 }

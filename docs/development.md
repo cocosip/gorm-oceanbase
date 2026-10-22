@@ -2,9 +2,9 @@
 
 本文档基于 [design.md](design.md) 定义开发任务，直接通过各任务的状态列表示当前进度。
 
-**当前进度：已完成 14 / 32，进行中 6，未开始 12，受阻 0。下一项：G31 QuoteTo(Oracle)；M1 剩余 ◐ 项需真实数据库（G22），无库任务从 M2 继续。**
+**当前进度：已完成 15 / 32，进行中 6，未开始 11，受阻 0。下一项：G32 DataTypeOf(Oracle)；M1 剩余 ◐ 项需真实数据库（G22），无库任务从 M2 继续。**
 
-**本轮说明**：M2 G30 Oracle 模式入口完成：解除 M1 的 Oracle 拒绝门，版本探测（Oracle `SELECT ob_version() FROM dual`，MySQL 保留 OB_VERSION()/VERSION() 有限回退）、NowFunc（Oracle 微秒）、MySQL 5.7 语法门、回调与 ClauseBuilders、Migrator 均按固化模式分发；MySQL 档案 8 仅对 MySQL 模式注入，ParseTime 仍对内部连接统一开启。`go build`、`go vet`、`go test ./...`、集成包无库编译与 golangci-lint 通过。auto→oracle 与读取错误经协议模拟（注入 SessionVariable 读桩）覆盖。
+**本轮说明**：M2 G31 QuoteTo(Oracle) 完成：双引号状态机对齐 MySQL 实现（`.` 分隔、`""` 转义），未加引号路径标识符大写化（R2），自带引号的显式大小写名称原样保留；fake 测试基建支持多列结果，用大写结果列验证了到模型字段的扫描映射（依赖 GORM LookUpField 的 namer 回退）。`go build`、`go vet`、`go test ./...`、集成包无库编译与 golangci-lint 通过。G39 真实大小写验收仍待真实数据库。
 
 **维护规则**：
 
@@ -79,7 +79,7 @@
 | ID | 任务 | 内容要点 | 依赖 | 验收 | 状态 |
 | --- | --- | --- | --- | --- | --- |
 | G30 | Oracle 模式入口 | 在 G11 的模式解析上接入 Oracle 行为；复用 SessionVariable，不新增 PinnedMode；启用 G13 的 Oracle 产品版本查询及最终模式 NowFunc | G11, G12, G13, G14 | 单测/协议模拟：显式 oracle、auto→oracle、读取错误直接返回；G39 真实验收 | ✅ |
-| G31 | QuoteTo(Oracle) | 双引号 + 未加引号标识符大写化（R2）；区分显式大小写名称，覆盖结果列到模型字段的映射 | G30 | 单测：大小写/转义/扫描；G39 真实大小写验收 | ☐ |
+| G31 | QuoteTo(Oracle) | 双引号 + 未加引号标识符大写化（R2）；区分显式大小写名称，覆盖结果列到模型字段的映射 | G30 | 单测：大小写/转义/扫描；G39 真实大小写验收 | ✅ |
 | G32 | DataTypeOf(Oracle) | Int64→NUMBER(19,0)、Uint64→NUMBER(20,0)；其余 NUMBER/VARCHAR2/CLOB/RAW/BLOB/TIMESTAMP；Object/Array 必须显式 SQL 类型 tag、服务器预处理；限定带时区 Scanner 路径（design.md §5.1/5.2） | G30 | 单测：映射、int64/uint64 极值、复杂类型推断负例与 tag 正例 | ☐ |
 | G33 | LIMIT 改写 | `ClauseBuilders["LIMIT"]` → `OFFSET n ROWS FETCH FIRST m ROWS ONLY` | G30 | DryRun 快照 | ☐ |
 | G34 | Oracle Create 与批量插入 | 替换 gorm:create，保留事务/hook/关联回调；整句构建 INSERT/INSERT ALL；default tag 零值与显式 NULL 按 GORM 输入形式区分；按相邻相同列集合批量，必要时逐条执行；为 G35/G36 保留逐行冲突目标与主键上下文（design.md §5.3） | G30, G31, G32 | 完整 SQL 快照无重复前缀；结构体默认值、map nil/NULL 表达式、不同列集合/输入顺序与执行错误用例；生成主键路径接 G36 | ☐ |

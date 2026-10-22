@@ -69,12 +69,12 @@ func TestMySQLDryRunSQL(t *testing.T) {
 		Name string `gorm:"size:64"`
 	}
 
-	createSQL := dry.Create(&user{Name: "alice"}).Statement.SQL.String()
+	createSQL := dry.Create(&user{Name: testUserName}).Statement.SQL.String()
 	if createSQL != "INSERT INTO `users` (`name`) VALUES (?)" {
 		t.Fatalf("create SQL = %q", createSQL)
 	}
 
-	querySQL := dry.Model(&user{}).Where("name = ?", "alice").Limit(5).Offset(2).Find(&[]user{}).Statement.SQL.String()
+	querySQL := dry.Model(&user{}).Where("name = ?", testUserName).Limit(5).Offset(2).Find(&[]user{}).Statement.SQL.String()
 	wantQuery := "SELECT * FROM `users` WHERE name = ? LIMIT ? OFFSET ?"
 	if querySQL != wantQuery {
 		t.Fatalf("query SQL = %q, want %q", querySQL, wantQuery)

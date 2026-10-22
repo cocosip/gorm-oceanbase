@@ -22,8 +22,10 @@ type fakeServer struct {
 }
 
 type fakeReply struct {
-	value string
-	err   error
+	value   string
+	err     error
+	columns []string
+	rows    [][]driver.Value
 }
 
 func newFakeServer() *fakeServer {
@@ -38,6 +40,13 @@ func (f *fakeServer) reply(query string, values ...string) {
 		value = values[0]
 	}
 	f.replies[query] = fakeReply{value: value}
+}
+
+// replyRows answers query with a full result set, used to exercise scanning.
+func (f *fakeServer) replyRows(query string, columns []string, rows [][]driver.Value) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.replies[query] = fakeReply{columns: columns, rows: rows}
 }
 
 func (f *fakeServer) replyError(query string, err error) {
@@ -151,7 +160,13 @@ func (c *fakeConn) QueryContext(_ context.Context, query string, _ []driver.Name
 	if reply.err != nil {
 		return nil, reply.err
 	}
-	return &fakeRows{value: reply.value}, nil
+	if reply.columns != nil {
+		return &fakeRows{columns: reply.columns, rows: reply.rows}, nil
+	}
+	return &fakeRows{
+		columns: []string{"value"},
+		rows:    [][]driver.Value{{reply.value}},
+	}, nil
 }
 
 func (c *fakeConn) ExecContext(_ context.Context, query string, _ []driver.NamedValue) (driver.Result, error) {
@@ -169,18 +184,19 @@ func (fakeResult) LastInsertId() (int64, error) {
 func (fakeResult) RowsAffected() (int64, error) { return 1, nil }
 
 type fakeRows struct {
-	done  bool
-	value string
+	columns []string
+	rows    [][]driver.Value
+	cursor  int
 }
 
-func (r *fakeRows) Columns() []string { return []string{"value"} }
+func (r *fakeRows) Columns() []string { return r.columns }
 func (r *fakeRows) Close() error      { return nil }
 func (r *fakeRows) Next(dest []driver.Value) error {
-	if r.done {
+	if r.cursor >= len(r.rows) {
 		return io.EOF
 	}
-	r.done = true
-	dest[0] = r.value
+	copy(dest, r.rows[r.cursor])
+	r.cursor++
 	return nil
 }
 

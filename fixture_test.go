@@ -15,4 +15,6 @@ const (
 	testAddr = "127.0.0.1:2881"
 	// testExplicitVersion is a bare OceanBase version as ob_version() returns it.
 	testExplicitVersion = "4.2.1.0"
+	// testUserName is the shared sample user name for CRUD tests.
+	testUserName = "alice"
 )
