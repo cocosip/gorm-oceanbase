@@ -91,7 +91,11 @@ jobs:
         run: go run github.com/rhysd/actionlint/cmd/actionlint@v1.7.12 -color
       - uses: golangci/golangci-lint-action@v9
         with:
+          # v2.14.0 matches the development workstation's golangci-lint; keep
+          # both in sync so local and CI report identical findings.
           version: v2.14.0
           args: --timeout=10m
       - name: Lint integration test sources without a database
+        # Same pinned binary as above; the integration tag pulls the two
+        # integration test files into one package for cross-file linters.
         run: golangci-lint run --build-tags=integration ./...
