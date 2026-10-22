@@ -289,7 +289,7 @@ func TestOracleAssociationCreates(t *testing.T) {
 
 	// belongs-to with a new company: the company key must exist before the
 	// foreign key is written.
-	employee := oracleEmployee{Name: "alice", Company: &oracleCompany{Name: "acme"}}
+	employee := oracleEmployee{Name: integrationUserName, Company: &oracleCompany{Name: "acme"}}
 	if err := db.Create(&employee).Error; err != nil {
 		t.Fatalf("Create belongs-to: %v", err)
 	}

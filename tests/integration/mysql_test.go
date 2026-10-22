@@ -12,6 +12,10 @@ import (
 	"gorm.io/gorm"
 )
 
+// integrationUserName is the shared sample name for the integration CRUD
+// suites; goconst counts the string across the whole package.
+const integrationUserName = "alice"
+
 // mysqlDSN returns the MySQL-compatible tenant DSN, skipping when absent.
 func mysqlDSN(t *testing.T) string {
 	t.Helper()
@@ -46,7 +50,7 @@ func TestMySQLCRUD(t *testing.T) {
 	}
 	t.Cleanup(func() { _ = db.Migrator().DropTable(&user{}) })
 
-	created := user{Name: "alice"}
+	created := user{Name: integrationUserName}
 	if err := db.Create(&created).Error; err != nil {
 		t.Fatalf("Create: %v", err)
 	}
@@ -58,7 +62,7 @@ func TestMySQLCRUD(t *testing.T) {
 	if err := db.First(&found, created.ID).Error; err != nil {
 		t.Fatalf("First: %v", err)
 	}
-	if found.Name != "alice" {
+	if found.Name != integrationUserName {
 		t.Fatalf("Name = %q", found.Name)
 	}
 
