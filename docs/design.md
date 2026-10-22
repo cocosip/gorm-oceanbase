@@ -3,7 +3,7 @@
 本文定义基于 [go-oceanbase](https://github.com/cocosip/go-oceanbase)（`database/sql` 驱动）的待实现 GORM Dialector，目标支持 OceanBase **MySQL 兼容模式**与 **Oracle 兼容模式**。开发与验收状态以 [development.md](development.md) 为准。
 
 - 模块路径：`github.com/cocosip/gorm-oceanbase`，包名 `oceanbase`
-- 开发基准：`gorm.io/gorm` v1.31.1；v1.25+ 为兼容目标，需完成版本矩阵测试后才能声明支持
+- 开发基准：`gorm.io/gorm` v1.31.2（当前最新版本）；v1.25+ 为兼容目标，需完成版本矩阵测试后才能声明支持
 - 驱动基线：`github.com/cocosip/go-oceanbase` **v0.1.1**
 - Go 版本：1.26（随底层驱动要求）
 
@@ -119,7 +119,7 @@ Initialize(db)
 
 内部池直接使用 `*sql.DB`，用户通过 `db.DB()` 获取连接池。GORM 的 `GetDBConnector` 查询对象是 ConnPool；仅在确有池包装时由包装实现，不给 Dialector 添加无效接口。Dialector 实现 `SavePointerDialectorInterface`（两种模式 OB 都支持 SAVEPOINT）。
 
-**Initialize 失败的所有权边界**：GORM v1.31.1 在 Dialector.Initialize 返回错误后会通过 `db.DB()` 取池并 Close；仅做到 Dialector 自己不调用外部池 Close 并不足够。版本查询等步骤使用局部候选池，所有可失败步骤结束后才挂载到 `db.ConnPool`。若实现确需提前挂载，错误返回前须清除 `db.ConnPool` 和已设置的 `db.Statement.ConnPool`，防止 GORM 追溯关闭外部池或事务所属池。失败时由 Dialector 关闭自己创建的临时/正式池，外部 Conn 始终归调用者所有。验收必须从 `gorm.Open` 入口注入版本查询等初始化错误，并确认原池仍可查询、原事务仍可使用；不能只直接调用 Initialize 测试。
+**Initialize 失败的所有权边界**：GORM v1.31.2 在 Dialector.Initialize 返回错误后会通过 `db.DB()` 取池并 Close；仅做到 Dialector 自己不调用外部池 Close 并不足够。版本查询等步骤使用局部候选池，所有可失败步骤结束后才挂载到 `db.ConnPool`。若实现确需提前挂载，错误返回前须清除 `db.ConnPool` 和已设置的 `db.Statement.ConnPool`，防止 GORM 追溯关闭外部池或事务所属池。失败时由 Dialector 关闭自己创建的临时/正式池，外部 Conn 始终归调用者所有。验收必须从 `gorm.Open` 入口注入版本查询等初始化错误，并确认原池仍可查询、原事务仍可使用；不能只直接调用 Initialize 测试。
 
 ### 4.1 模式的确定与默认值
 

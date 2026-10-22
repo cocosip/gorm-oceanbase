@@ -2,7 +2,9 @@
 
 本文档基于 [design.md](design.md) 定义开发任务，直接通过各任务的状态列表示当前进度。
 
-**当前进度：已完成 0 / 32，未开始 32，进行中 0，受阻 0。下一项：G01 模块初始化。**
+**当前进度：已完成 13 / 32，进行中 6，未开始 13，受阻 0。下一项：G22 真实租户验收（本轮不做），无库任务从 M2 G30 继续。**
+
+**本轮说明**：M1 MySQL 模式代码完成，`go build`、`go vet`、`go test ./...`、集成包无库编译与 golangci-lint 全部通过。剩余 ◐ 项均需真实数据库：G10a（TIME/DATETIME 档案 5/8 实测）、G10b（time.Time 扫描实测）、G11（mode=auto 真实探测）、G19（AutoMigrate 实测）、G22（MySQL 集成）、G23（依据实测结论定稿）。按当前约定不做服务器联调，skip 不计作通过。
 
 **维护规则**：
 
@@ -19,8 +21,8 @@
 
 | 阶段 | 目标 | 对应设计文档 | 状态 |
 | --- | --- | --- | --- |
-| M0 | 仓库骨架与依赖就绪 | §2 | ☐ |
-| M1 | **MySQL 模式完整可用**（首个可用版本） | §3–§5、§7、§10 | ☐ |
+| M0 | 仓库骨架与依赖就绪 | §2 | ✅ |
+| M1 | **MySQL 模式完整可用**（首个可用版本） | §3–§5、§7、§10 | ◐ |
 | M2 | Oracle 模式可用 | §5、§6、§9 | ☐ |
 | M3 | 增强：非主键字段与通用 RETURNING、驱动扩展桥接、兼容矩阵 | §5.3、§8 | ☐ |
 
@@ -30,9 +32,9 @@
 
 | ID | 任务 | 内容要点 | 依赖 | 验收 | 状态 |
 | --- | --- | --- | --- | --- | --- |
-| G01 | 模块初始化 | `go.mod`（module github.com/cocosip/gorm-oceanbase，go 1.26）；固定开发基准 `gorm.io/gorm@v1.31.1`、`github.com/cocosip/go-oceanbase@v0.1.1`（远程模块，不用 replace）；更低 GORM 版本按矩阵验收后声明 | — | `go build ./...` 通过 | ☐ |
-| G02 | README 骨架 | 项目定位、快速上手（对齐 design.md §3 入口示例）、文档索引 | G01 | 评审通过 | ☐ |
-| G03 | CI 骨架 | GitHub Actions：build + vet + 无库 test + golangci-lint（复用现有 .golangci.yml）；集成包建立后补 `go test -tags=integration ./tests/integration -run '^$'` 编译检查 | G01 | 骨架阶段常规检查通过；G22/G39 建立后集成编译通过，不将 skip 记作真实验收 | ☐ |
+| G01 | 模块初始化 | `go.mod`（module github.com/cocosip/gorm-oceanbase，go 1.26）；固定开发基准 `gorm.io/gorm@v1.31.2`（当前最新）、`github.com/cocosip/go-oceanbase@v0.1.1`（远程模块，不用 replace）；更低 GORM 版本按矩阵验收后声明 | — | `go build ./...` 通过 | ✅ |
+| G02 | README 骨架 | 项目定位、快速上手（对齐 design.md §3 入口示例）、文档索引 | G01 | 评审通过 | ✅ |
+| G03 | CI 骨架 | GitHub Actions：build + vet + 无库 test + golangci-lint（复用现有 .golangci.yml）；集成包建立后补 `go test -tags=integration ./tests/integration -run '^$'` 编译检查 | G01 | 骨架阶段常规检查通过；G22/G39 建立后集成编译通过，不将 skip 记作真实验收 | ✅ |
 
 ## 3. M1：MySQL 模式完整可用
 
@@ -40,37 +42,37 @@
 
 | ID | 任务 | 内容要点 | 依赖 | 验收 | 状态 |
 | --- | --- | --- | --- | --- | --- |
-| G10 | Config 与入口 | design.md §3 字段；Open/New 不联网；校验 DSN/DSNConfig/Conn 互斥；记录 DSN 显式参数后用驱动 ParseDSN；复制结构化配置，不反向序列化或保留自定义 DriverName 路径 | G01 | 单测：输入分支、无副作用、错误由 Initialize 返回、调用者配置不被修改 | ☐ |
-| G10a | MySQL 档案注入 | 顶层非零值 > DSN 显式参数/DSNConfig 非零值 > 默认 8；在正式 Connector 前完成；保留已规范化 DSNConfig 中的 5；Oracle 不注入（design.md §4.2、R6） | G10, G11 | 单测：实际 Connector 配置为 8、显式 5 保留、来源优先级；TIME 小数与 DATETIME 行为分别验证 | ☐ |
-| G10b | 时间读取策略 | 内部 Session.ParseTime=true；DSN 显式 false 报配置错误；DSNConfig bool 零值按 GORM 策略开启；外部 Conn 的前提写入文档（design.md §4.2） | G10 | 单测：time.Time 扫描成功、显式 false 拒绝、外部池不被修改 | ☐ |
-| G11 | 模式确定 | 顶层非零 Mode > DSN 显式模式/DSNConfig 非零 Mode > MySQL；零值表示未指定；仅 DSN mode=auto 用临时池和已有 SessionVariable 读取并校验模式，关闭临时资源后固化正式配置（design.md §4.1） | G10 | 单测/协议模拟：显式来源与覆盖、MYSQL/ORACLE/NULL/未知值、超时和权限错误不误判；M1 检出 Oracle 明确拒绝，不套用 MySQL 方言 | ☐ |
-| G12 | NowFunc 安装 | Apply 记录用户是否已设置；Initialize 在最终模式确定后安装 MySQL/Oracle 默认精度策略，auto 不能预先按 MySQL 处理（design.md §4） | G11 | 单测：两种精度与 auto 最终模式、不覆盖用户设置 | ☐ |
-| G13 | 版本探测 | MySQL `SELECT OB_VERSION()`，仅函数不支持时回退 VERSION()；Oracle `SELECT ob_version() FROM dual`；按真实 OB 版本解析；用户 ServerVersion/跳过查询/未知版本保守策略；与驱动自身探测开关区分 | G11 | 单测：双方言 SQL、OceanBase 标记解析、有限回退、错误传播、未知版本禁用需确认的能力 | ☐ |
-| G14 | Initialize | 先解析/探测/合并最终配置，再 NewConnector→OpenDB；外部 Conn 要求显式具体 Mode；候选池仅在所有可失败步骤成功后挂到 db.ConnPool，提前挂载须在错误路径解除引用，避免 GORM 关闭外部池/事务所属池；失败关闭自建资源；注册 callbacks/ClauseBuilders、SavePointerDialectorInterface，通过实际 ConnPool 支持 db.DB()（design.md §4、R13） | G10a, G10b, G11, G12, G13 | 协议模拟：最终配置、默认值和资源释放；从 gorm.Open 注入初始化错误后，原外部池仍可查询、事务仍可使用，含包装池；G22 真实连接验收 | ☐ |
+| G10 | Config 与入口 | design.md §3 字段；Open/New 不联网；校验 DSN/DSNConfig/Conn 互斥；记录 DSN 显式参数后用驱动 ParseDSN；复制结构化配置，不反向序列化或保留自定义 DriverName 路径 | G01 | 单测：输入分支、无副作用、错误由 Initialize 返回、调用者配置不被修改 | ✅ |
+| G10a | MySQL 档案注入 | 顶层非零值 > DSN 显式参数/DSNConfig 非零值 > 默认 8；在正式 Connector 前完成；保留已规范化 DSNConfig 中的 5；Oracle 不注入（design.md §4.2、R6） | G10, G11 | 单测：实际 Connector 配置为 8、显式 5 保留、来源优先级；TIME 小数与 DATETIME 行为分别验证 | ◐ |
+| G10b | 时间读取策略 | 内部 Session.ParseTime=true；DSN 显式 false 报配置错误；DSNConfig bool 零值按 GORM 策略开启；外部 Conn 的前提写入文档（design.md §4.2） | G10 | 单测：time.Time 扫描成功、显式 false 拒绝、外部池不被修改 | ◐ |
+| G11 | 模式确定 | 顶层非零 Mode > DSN 显式模式/DSNConfig 非零 Mode > MySQL；零值表示未指定；仅 DSN mode=auto 用临时池和已有 SessionVariable 读取并校验模式，关闭临时资源后固化正式配置（design.md §4.1） | G10 | 单测/协议模拟：显式来源与覆盖、MYSQL/ORACLE/NULL/未知值、超时和权限错误不误判；M1 检出 Oracle 明确拒绝，不套用 MySQL 方言 | ◐ |
+| G12 | NowFunc 安装 | Apply 记录用户是否已设置；Initialize 在最终模式确定后安装 MySQL/Oracle 默认精度策略，auto 不能预先按 MySQL 处理（design.md §4） | G11 | 单测：两种精度与 auto 最终模式、不覆盖用户设置 | ✅ |
+| G13 | 版本探测 | MySQL `SELECT OB_VERSION()`，仅函数不支持时回退 VERSION()；Oracle `SELECT ob_version() FROM dual`；按真实 OB 版本解析；用户 ServerVersion/跳过查询/未知版本保守策略；与驱动自身探测开关区分 | G11 | 单测：双方言 SQL、OceanBase 标记解析、有限回退、错误传播、未知版本禁用需确认的能力 | ✅ |
+| G14 | Initialize | 先解析/探测/合并最终配置，再 NewConnector→OpenDB；外部 Conn 要求显式具体 Mode；候选池仅在所有可失败步骤成功后挂到 db.ConnPool，提前挂载须在错误路径解除引用，避免 GORM 关闭外部池/事务所属池；失败关闭自建资源；注册 callbacks/ClauseBuilders、SavePointerDialectorInterface，通过实际 ConnPool 支持 db.DB()（design.md §4、R13） | G10a, G10b, G11, G12, G13 | 协议模拟：最终配置、默认值和资源释放；从 gorm.Open 注入初始化错误后，原外部池仍可查询、事务仍可使用，含包装池；G22 真实连接验收 | ✅ |
 
 ### 3.2 MySQL 方言行为（dialect_mysql.go）
 
 | ID | 任务 | 内容要点 | 依赖 | 验收 | 状态 |
 | --- | --- | --- | --- | --- | --- |
-| G15 | QuoteTo | 反引号状态机（含 `.` 分隔、`` ` `` 转义），行为对齐 gorm mysql driver | G10 | 单测：引用用例集与 mysql driver 输出一致 | ☐ |
-| G16 | DataTypeOf | design.md §5.1 MySQL 表全量：Bool/Int/Uint/Float/String/Time/Bytes/自定义 + AUTO_INCREMENT/unsigned；字符串按字段 Size、DefaultStringSize、条件 191、longtext 顺序决策，不统一默认 191 | G10 | 单测：全枚举快照；普通 string→longtext、主键/默认值/INDEX/UNIQUE→varchar(191)、显式长度/全局长度及 mediumtext/longtext 边界，对拍 mysql v1.6.0 | ☐ |
-| G17 | 其余接口 | `DefaultValueOf`(DEFAULT)、`BindVarTo`(?)、`Explain` | G10 | 单测 | ☐ |
-| G18 | ClauseBuilders | ON CONFLICT→`ON DUPLICATE KEY UPDATE`（含 excluded→VALUES(col)）；空 VALUES() 特例；按版本 FOR SHARE（design.md §5 表） | G14 | DryRun SQL 快照测试 | ☐ |
+| G15 | QuoteTo | 反引号状态机（含 `.` 分隔、`` ` `` 转义），行为对齐 gorm mysql driver | G10 | 单测：引用用例集与 mysql driver 输出一致 | ✅ |
+| G16 | DataTypeOf | design.md §5.1 MySQL 表全量：Bool/Int/Uint/Float/String/Time/Bytes/自定义 + AUTO_INCREMENT/unsigned；字符串按字段 Size、DefaultStringSize、条件 191、longtext 顺序决策，不统一默认 191 | G10 | 单测：全枚举快照；普通 string→longtext、主键/默认值/INDEX/UNIQUE→varchar(191)、显式长度/全局长度及 mediumtext/longtext 边界，对拍 mysql v1.6.0 | ✅ |
+| G17 | 其余接口 | `DefaultValueOf`(DEFAULT)、`BindVarTo`(?)、`Explain` | G10 | 单测 | ✅ |
+| G18 | ClauseBuilders | ON CONFLICT→`ON DUPLICATE KEY UPDATE`（含 excluded→VALUES(col)）；空 VALUES() 特例；按版本 FOR SHARE（design.md §5 表） | G14 | DryRun SQL 快照测试 | ✅ |
 
 ### 3.3 Migrator 与错误翻译（migrator.go、error_translator.go）
 
 | ID | 任务 | 内容要点 | 依赖 | 验收 | 状态 |
 | --- | --- | --- | --- | --- | --- |
-| G19 | MySQL Migrator | 基于通用 migrator + information_schema：表/列/索引/约束/视图/类型查询；ColumnTypes/AlterColumn/RenameColumn 等（特性开关接 G13 结果） | G14, G16 | 集成：AutoMigrate 全流程 + 增量变更 | ☐ |
-| G20 | 错误翻译 | `*dberrors.Error` 按 MySQL 码表：1062→ErrDuplicatedKey，1451/1452→ErrForeignKeyViolated；未命中原样返回 | G11 | 单测：码表命中/未命中/非驱动错误 | ☐ |
+| G19 | MySQL Migrator | 基于通用 migrator + information_schema：表/列/索引/约束/视图/类型查询；ColumnTypes/AlterColumn/RenameColumn 等（特性开关接 G13 结果） | G14, G16 | 集成：AutoMigrate 全流程 + 增量变更 | ◐ |
+| G20 | 错误翻译 | `*dberrors.Error` 按 MySQL 码表：1062→ErrDuplicatedKey，1451/1452→ErrForeignKeyViolated；未命中原样返回 | G11 | 单测：码表命中/未命中/非驱动错误 | ✅ |
 
 ### 3.4 测试与文档
 
 | ID | 任务 | 内容要点 | 依赖 | 验收 | 状态 |
 | --- | --- | --- | --- | --- | --- |
-| G21 | 单元测试收口 | 配置/连接边界及 DryRun SQL 对拍，含 gorm.Open 失败后的外部资源所有权和字符串默认规则；差异白名单（探测、boolean 等）；最低 GORM 版本单独跑矩阵，未跑版本不声明支持（design.md §10） | G10–G20（含 G10a/G10b） | `go test ./... -count=1` 全绿；记录实际 GORM 测试版本 | ☐ |
-| G22 | MySQL 集成测试 | integration tag、OB_MYSQL_DSN：CRUD、关联、事务/SavePoint、AutoMigrate、并发；ParseTime=true 的 time.Time 读取；datetime(3)/(6) 往返；TIME(3)/(6) 的档案 5/8 差异；与 G03 同步编译检查 | G14–G20 | 真实 MySQL 租户验收，记录版本和 pass/fail/skip；DSN 缺失的 skip 不算通过 | ☐ |
-| G23 | MySQL 模式使用文档 | README：模式/档案优先级、ParseTime 要求、外部池前提及所有权、字符串默认长度规则、auto 错误语义、无混合模式租户；仅声明实际验收范围 | G21, G22 | 评审通过 | ☐ |
+| G21 | 单元测试收口 | 配置/连接边界及 DryRun SQL 对拍，含 gorm.Open 失败后的外部资源所有权和字符串默认规则；差异白名单（探测、boolean 等）；最低 GORM 版本单独跑矩阵，未跑版本不声明支持（design.md §10） | G10–G20（含 G10a/G10b） | `go test ./... -count=1` 全绿；记录实际 GORM 测试版本 | ✅ |
+| G22 | MySQL 集成测试 | integration tag、OB_MYSQL_DSN：CRUD、关联、事务/SavePoint、AutoMigrate、并发；ParseTime=true 的 time.Time 读取；datetime(3)/(6) 往返；TIME(3)/(6) 的档案 5/8 差异；与 G03 同步编译检查 | G14–G20 | 真实 MySQL 租户验收，记录版本和 pass/fail/skip；DSN 缺失的 skip 不算通过 | ◐ |
+| G23 | MySQL 模式使用文档 | README：模式/档案优先级、ParseTime 要求、外部池前提及所有权、字符串默认长度规则、auto 错误语义、无混合模式租户；仅声明实际验收范围 | G21, G22 | 评审通过 | ◐ |
 
 ## 4. M2：Oracle 模式可用
 
