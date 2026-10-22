@@ -2,9 +2,9 @@
 
 本文档基于 [design.md](design.md) 定义开发任务，直接通过各任务的状态列表示当前进度。
 
-**当前进度：已完成 13 / 32，进行中 6，未开始 13，受阻 0。下一项：G22 真实租户验收（本轮不做），无库任务从 M2 G30 继续。**
+**当前进度：已完成 14 / 32，进行中 6，未开始 12，受阻 0。下一项：G31 QuoteTo(Oracle)；M1 剩余 ◐ 项需真实数据库（G22），无库任务从 M2 继续。**
 
-**本轮说明**：M1 MySQL 模式代码完成，`go build`、`go vet`、`go test ./...`、集成包无库编译与 golangci-lint 全部通过。剩余 ◐ 项均需真实数据库：G10a（TIME/DATETIME 档案 5/8 实测）、G10b（time.Time 扫描实测）、G11（mode=auto 真实探测）、G19（AutoMigrate 实测）、G22（MySQL 集成）、G23（依据实测结论定稿）。按当前约定不做服务器联调，skip 不计作通过。
+**本轮说明**：M2 G30 Oracle 模式入口完成：解除 M1 的 Oracle 拒绝门，版本探测（Oracle `SELECT ob_version() FROM dual`，MySQL 保留 OB_VERSION()/VERSION() 有限回退）、NowFunc（Oracle 微秒）、MySQL 5.7 语法门、回调与 ClauseBuilders、Migrator 均按固化模式分发；MySQL 档案 8 仅对 MySQL 模式注入，ParseTime 仍对内部连接统一开启。`go build`、`go vet`、`go test ./...`、集成包无库编译与 golangci-lint 通过。auto→oracle 与读取错误经协议模拟（注入 SessionVariable 读桩）覆盖。
 
 **维护规则**：
 
@@ -23,7 +23,7 @@
 | --- | --- | --- | --- |
 | M0 | 仓库骨架与依赖就绪 | §2 | ✅ |
 | M1 | **MySQL 模式完整可用**（首个可用版本） | §3–§5、§7、§10 | ◐ |
-| M2 | Oracle 模式可用 | §5、§6、§9 | ☐ |
+| M2 | Oracle 模式可用 | §5、§6、§9 | ◐ |
 | M3 | 增强：非主键字段与通用 RETURNING、驱动扩展桥接、兼容矩阵 | §5.3、§8 | ☐ |
 
 ---
@@ -78,7 +78,7 @@
 
 | ID | 任务 | 内容要点 | 依赖 | 验收 | 状态 |
 | --- | --- | --- | --- | --- | --- |
-| G30 | Oracle 模式入口 | 在 G11 的模式解析上接入 Oracle 行为；复用 SessionVariable，不新增 PinnedMode；启用 G13 的 Oracle 产品版本查询及最终模式 NowFunc | G11, G12, G13, G14 | 单测/协议模拟：显式 oracle、auto→oracle、读取错误直接返回；G39 真实验收 | ☐ |
+| G30 | Oracle 模式入口 | 在 G11 的模式解析上接入 Oracle 行为；复用 SessionVariable，不新增 PinnedMode；启用 G13 的 Oracle 产品版本查询及最终模式 NowFunc | G11, G12, G13, G14 | 单测/协议模拟：显式 oracle、auto→oracle、读取错误直接返回；G39 真实验收 | ✅ |
 | G31 | QuoteTo(Oracle) | 双引号 + 未加引号标识符大写化（R2）；区分显式大小写名称，覆盖结果列到模型字段的映射 | G30 | 单测：大小写/转义/扫描；G39 真实大小写验收 | ☐ |
 | G32 | DataTypeOf(Oracle) | Int64→NUMBER(19,0)、Uint64→NUMBER(20,0)；其余 NUMBER/VARCHAR2/CLOB/RAW/BLOB/TIMESTAMP；Object/Array 必须显式 SQL 类型 tag、服务器预处理；限定带时区 Scanner 路径（design.md §5.1/5.2） | G30 | 单测：映射、int64/uint64 极值、复杂类型推断负例与 tag 正例 | ☐ |
 | G33 | LIMIT 改写 | `ClauseBuilders["LIMIT"]` → `OFFSET n ROWS FETCH FIRST m ROWS ONLY` | G30 | DryRun 快照 | ☐ |

@@ -54,14 +54,6 @@ func TestInitializeRequiresConcreteModeForExternalConn(t *testing.T) {
 	}
 }
 
-func TestInitializeRejectsOracleModeInM1(t *testing.T) {
-	pool := newFakePool(t)
-	d := &Dialector{Config: &Config{Conn: pool, Mode: ob.ModeOracle}}
-	if _, err := gorm.Open(d, &gorm.Config{DisableAutomaticPing: true}); !errors.Is(err, ErrUnsupportedMode) {
-		t.Fatalf("err = %v, want ErrUnsupportedMode", err)
-	}
-}
-
 func TestInitializeVersionFallbackOnlyForMissingFunction(t *testing.T) {
 	pool := newFakePool(t)
 	pool.server.replyError("SELECT OB_VERSION()", &dberrors.Error{Code: 1305, Message: "FUNCTION does not exist"})
@@ -121,7 +113,7 @@ func TestSkipInitializeWithVersionUsesUnknownCapabilities(t *testing.T) {
 
 func TestServerVersionSkipsQuery(t *testing.T) {
 	pool := newFakePool(t)
-	d := &Dialector{Config: &Config{Conn: pool, Mode: ob.ModeMySQL, ServerVersion: "4.2.1.0"}}
+	d := &Dialector{Config: &Config{Conn: pool, Mode: ob.ModeMySQL, ServerVersion: testExplicitVersion}}
 	if _, err := gorm.Open(d, &gorm.Config{DisableAutomaticPing: true}); err != nil {
 		t.Fatalf("gorm.Open: %v", err)
 	}
@@ -146,7 +138,7 @@ func TestNowFuncInstalledOnlyWhenUserDidNotSetOne(t *testing.T) {
 	}
 
 	custom := func() time.Time { return time.Unix(1, 2) }
-	db2, err := gorm.Open(&Dialector{Config: &Config{Conn: newFakePool(t), Mode: ob.ModeMySQL, ServerVersion: "4.2.1.0"}}, &gorm.Config{NowFunc: custom, DisableAutomaticPing: true})
+	db2, err := gorm.Open(&Dialector{Config: &Config{Conn: newFakePool(t), Mode: ob.ModeMySQL, ServerVersion: testExplicitVersion}}, &gorm.Config{NowFunc: custom, DisableAutomaticPing: true})
 	if err != nil {
 		t.Fatalf("gorm.Open: %v", err)
 	}

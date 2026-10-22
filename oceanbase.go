@@ -21,7 +21,11 @@ const (
 	// DefaultDriverName is the registered database/sql driver name.
 	DefaultDriverName = "oceanbase"
 
-	defaultDatetimePrecision = 3
+	// mysqlDatetimePrecision is the default datetime precision of MySQL mode,
+	// aligned with the gorm mysql driver.
+	mysqlDatetimePrecision = 3
+	// oracleDatetimePrecision matches the Oracle TIMESTAMP default precision.
+	oracleDatetimePrecision = 6
 
 	// mysqlErrFunctionDoesNotExist is ER_SP_DOES_NOT_EXIST; it is the only
 	// version-query failure that may fall back from OB_VERSION() to VERSION().
@@ -120,10 +124,14 @@ func (d *Dialector) Apply(config *gorm.Config) error {
 	return nil
 }
 
-// nowFunc returns the timestamp precision policy for the pinned mode.
+// nowFunc returns the timestamp precision policy for the pinned mode: MySQL
+// truncates to the configured datetime precision (default milliseconds),
+// Oracle truncates to microseconds (TIMESTAMP default precision 6).
 func (d *Dialector) nowFunc() func() time.Time {
-	precision := defaultDatetimePrecision
-	if d.DefaultDatetimePrecision != nil {
+	precision := mysqlDatetimePrecision
+	if d.mode() == ob.ModeOracle {
+		precision = oracleDatetimePrecision
+	} else if d.DefaultDatetimePrecision != nil {
 		precision = *d.DefaultDatetimePrecision
 	}
 	step := time.Second
@@ -198,7 +206,7 @@ func (d *Dialector) Initialize(db *gorm.DB) error {
 	}
 
 	d.registerCallbacks(db)
-	for name, builder := range mysqlClauseBuilders(d) {
+	for name, builder := range d.clauseBuilders() {
 		if _, exists := db.ClauseBuilders[name]; !exists {
 			db.ClauseBuilders[name] = builder
 		}
@@ -248,11 +256,6 @@ func (d *Dialector) resolveDriverConfig() (*ob.Config, error) {
 	if err != nil {
 		return nil, err
 	}
-	if mode == ob.ModeOracle {
-		// M1 delivers MySQL mode only; never silently apply MySQL syntax to an
-		// Oracle-compatible tenant.
-		return nil, fmt.Errorf("%w: Oracle compatibility mode", ErrUnsupportedMode)
-	}
 
 	driverCfg.Mode = mode
 	d.resolvedMode = mode
@@ -263,7 +266,10 @@ func (d *Dialector) resolveDriverConfig() (*ob.Config, error) {
 	}
 
 	driverCfg.Session.ParseTime = true
-	driverCfg.Session.CompatibleMysqlVersion = d.resolveMySQLProfile(driverCfg, dsnProfileExplicit)
+	if mode == ob.ModeMySQL {
+		// The MySQL client profile is meaningless for an Oracle tenant.
+		driverCfg.Session.CompatibleMysqlVersion = d.resolveMySQLProfile(driverCfg, dsnProfileExplicit)
+	}
 	return &driverCfg, nil
 }
 
@@ -326,7 +332,7 @@ func (d *Dialector) probeMode() (ob.Mode, error) {
 
 	ctx, cancel := context.WithTimeout(context.Background(), probeTimeout)
 	defer cancel()
-	value, err := readCompatibilityMode(ctx, probeCfg)
+	value, err := sessionVariableReader(ctx, probeCfg)
 	if err != nil {
 		return 0, fmt.Errorf("%w: compatibility mode probe: %w", ErrInvalidConfiguration, err)
 	}
@@ -370,6 +376,11 @@ func readCompatibilityMode(ctx context.Context, cfg ob.Config) (sql.NullString, 
 	return ob.SessionVariable(ctx, conn, "ob_compatibility_mode")
 }
 
+// sessionVariableReader is the indirection probeMode uses to read
+// ob_compatibility_mode. It is a variable so protocol tests can stand in for
+// the server without a network endpoint.
+var sessionVariableReader = readCompatibilityMode
+
 // parseCompatibilityMode accepts only a non-NULL MYSQL or ORACLE value,
 // ignoring case. Anything else is an initialization error.
 func parseCompatibilityMode(value sql.NullString) (ob.Mode, error) {
@@ -406,9 +417,16 @@ func (d *Dialector) resolveMySQLProfile(driverCfg ob.Config, dsnProfileExplicit 
 	return profile
 }
 
+// mode returns the compatibility mode pinned for this dialector.
+func (d *Dialector) mode() ob.Mode { return d.resolvedMode }
+
 // applySyntaxGates enables the MySQL 5.7-compatible syntax gates unless the
-// caller already chose them. A user setting is never turned back off.
+// caller already chose them. A user setting is never turned back off. Oracle
+// mode has its own SQL surface and carries no MySQL gate.
 func (d *Dialector) applySyntaxGates() {
+	if d.mode() != ob.ModeMySQL {
+		return
+	}
 	gates := mysqlCapabilities()
 	d.DontSupportRenameColumn = d.DontSupportRenameColumn || gates.dontSupportRenameColumn
 	d.DontSupportForShareClause = d.DontSupportForShareClause || gates.dontSupportForShareClause
@@ -416,13 +434,22 @@ func (d *Dialector) applySyntaxGates() {
 }
 
 // probeVersion resolves the OceanBase product version, honouring an explicit
-// ServerVersion and the skip flag.
+// ServerVersion and the skip flag. Each mode asks for the real OB version in
+// its own SQL dialect; only the MySQL query may fall back to VERSION().
 func (d *Dialector) probeVersion(pool gorm.ConnPool) (string, error) {
 	if d.ServerVersion != "" {
 		return d.ServerVersion, nil
 	}
 	if d.SkipInitializeWithVersion {
 		return "", nil
+	}
+
+	if d.mode() == ob.ModeOracle {
+		var raw string
+		if err := pool.QueryRowContext(context.Background(), "SELECT ob_version() FROM dual").Scan(&raw); err != nil {
+			return "", err
+		}
+		return raw, nil
 	}
 
 	var raw string
@@ -465,11 +492,26 @@ func dsnHasParam(dsn, name string) bool {
 // registerCallbacks installs the mode-specific callback set. User-registered
 // clauses and builders are preserved by GORM.
 func (d *Dialector) registerCallbacks(db *gorm.DB) {
+	if d.mode() == ob.ModeOracle {
+		registerOracleCallbacks(db)
+		return
+	}
 	registerMySQLCallbacks(db)
+}
+
+// clauseBuilders returns the mode-specific clause rewrites.
+func (d *Dialector) clauseBuilders() map[string]clause.ClauseBuilder {
+	if d.mode() == ob.ModeOracle {
+		return oracleClauseBuilders(d)
+	}
+	return mysqlClauseBuilders(d)
 }
 
 // Migrator implements gorm.Dialector.
 func (d *Dialector) Migrator(db *gorm.DB) gorm.Migrator {
+	if d.mode() == ob.ModeOracle {
+		return newOracleMigrator(db, d)
+	}
 	return newMySQLMigrator(db, d)
 }
 

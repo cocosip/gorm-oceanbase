@@ -60,7 +60,7 @@ func TestProbeConfigForDSNUsesAutoMode(t *testing.T) {
 }
 
 func TestProbeConfigDoesNotMutateCallerDSNConfig(t *testing.T) {
-	original := ob.Config{Addr: "127.0.0.1:2881", User: "u", Mode: ob.ModeAuto}
+	original := ob.Config{Addr: testAddr, User: "u", Mode: ob.ModeAuto}
 	d := &Dialector{Config: &Config{DSNConfig: &original}}
 	if _, err := d.probeConfig(); err != nil {
 		t.Fatalf("probeConfig: %v", err)

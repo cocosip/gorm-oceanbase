@@ -11,4 +11,8 @@ const (
 	testOBCEVersion = "5.7.25-OceanBase_CE-v4.2.1.0"
 	// testVarchar191 is the MySQL utf8mb4 fallback length.
 	testVarchar191 = "varchar(191)"
+	// testAddr is a well-formed listener address for structured configs.
+	testAddr = "127.0.0.1:2881"
+	// testExplicitVersion is a bare OceanBase version as ob_version() returns it.
+	testExplicitVersion = "4.2.1.0"
 )

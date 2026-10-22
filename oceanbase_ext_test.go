@@ -12,7 +12,7 @@ import (
 
 func TestNewCopiesCallerConfig(t *testing.T) {
 	cfg := ob.Config{
-		Addr:     "127.0.0.1:2881",
+		Addr:     testAddr,
 		User:     "u",
 		Password: "p",
 		Database: "db",
@@ -76,14 +76,6 @@ func TestDSNParseTimeFalseIsRejected(t *testing.T) {
 	}
 	if !strings.Contains(err.Error(), "parseTime=false") {
 		t.Fatalf("error must explain the parseTime conflict: %v", err)
-	}
-}
-
-func TestDSNModeOracleRejectedBeforeConnecting(t *testing.T) {
-	d := &Dialector{Config: &Config{DSN: testDSNNoMode + "?mode=oracle"}}
-	_, err := d.resolveDriverConfig()
-	if !errors.Is(err, ErrUnsupportedMode) {
-		t.Fatalf("err = %v, want ErrUnsupportedMode", err)
 	}
 }
 

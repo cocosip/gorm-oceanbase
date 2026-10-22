@@ -243,7 +243,7 @@ func (d *Dialector) mysqlTimeType(field *schema.Field) string {
 		if d.DefaultDatetimePrecision != nil {
 			field.Precision = *d.DefaultDatetimePrecision
 		} else {
-			field.Precision = defaultDatetimePrecision
+			field.Precision = mysqlDatetimePrecision
 		}
 	}
 
