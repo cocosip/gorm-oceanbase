@@ -2,9 +2,9 @@
 
 本文档基于 [design.md](design.md) 定义开发任务，直接通过各任务的状态列表示当前进度。
 
-**当前进度：已完成 22 / 32，进行中 6，未开始 4，受阻 0。下一项：G39 Oracle 集成测试与文档（无库部分）；M1 剩余 ◐ 项需真实数据库（G22）。**
+**当前进度：已完成 22 / 32，进行中 7，未开始 3，受阻 0。下一项：G22/G39 真实租户验收（需数据库联调，按约定本轮不做）。**
 
-**本轮说明**：M2 G38 Oracle 错误翻译完成：`Translate` 按固化模式查隔离码表——Oracle 模式映射 ORA-00001→ErrDuplicatedKey、ORA-02291/02292→ErrForeignKeyViolated，MySQL 模式保留 1062/1451/1452 码表；两表互不串扰（Oracle 不映射 1062、MySQL 不映射 1），未命中与包装错误原样穿透。`go build`、`go vet`、`go test ./...`、集成包无库编译与 golangci-lint 通过。
+**本轮说明**：M2 G39 的无库交付完成：`tests/integration/oracle_test.go` 覆盖 CRUD/迁移、大写列扫描、默认值与显式 NULL、批量逐条主键回填、MERGE 边界（ON 列更新拒绝、DoNothing 保持）、错误翻译、NUMBER 边界、Object 负例与 belongs-to/has-many/many2many、混合 Save(slice)、FullSaveAssociations（`OB_ORACLE_DSN` 提供后运行，缺 DSN 一律跳过且不计通过）；README 补充 Oracle 模式章节（类型映射、标识符大小写、IDENTITY 门槛与序列、MERGE 边界、按模式隔离的错误码表）并移除 M1-only 说明。真实 Oracle 租户验收（记录版本、pass/fail/skip、IDENTITY 门槛核实）待数据库联调。`go build`、`go vet`、`go test ./...`、集成包无库编译与 golangci-lint 通过。
 
 **维护规则**：
 
@@ -87,7 +87,7 @@
 | G36 | 生成主键与基础 RETURNING | IDENTITY 候选门槛 4.2.1 待真实验收、未知/低版本 DDL 前拒绝；单行 INSERT RETURNING INTO + sql.Out 回填，批量逐条回填；接 G35 主键目标分流，关联 ID 在外键/中间表写入前回填；序列 seq.NEXTVAL 预分配、autoIncrement:false；OracleMigrator 序列扩展（design.md §6） | G13, G32, G34, G35 | 模拟：不调用 LastInsertId、不重放；集成：IDENTITY/序列/显式主键、混合 ID、新建各类关联及 FullSaveAssociations、Save(slice)、外键/中间表引用、默认事务回滚与关闭事务后的错误 | ✅ |
 | G37 | Oracle Migrator | ALL_TAB_COLUMNS/ALL_CONSTRAINTS/ALL_INDEXES/ALL_CATALOG 查询；接 G36 的主键 DDL 与已验收版本门槛，未知/不支持版本在 DDL 前拒绝 IDENTITY | G31, G32, G36 | 集成：AutoMigrate 全流程，含主键 DDL 的允许/拒绝路径 | ✅ |
 | G38 | Oracle 错误翻译 | ORA 码表：1→ErrDuplicatedKey，2291/2292→ErrForeignKeyViolated（按模式隔离） | G30 | 单测 | ✅ |
-| G39 | Oracle 集成测试与文档 | OB_ORACLE_DSN：CRUD/迁移、标识符扫描、默认值/NULL、批量主键回填、受限 MERGE；新建 belongs-to/has-one/has-many/many-to-many、混合新旧对象、FullSaveAssociations、Save(slice)；NUMBER 边界、Object 预处理/文本负例、Array 存储限制；与 G03 同步编译检查 | G31–G38 | 真实 Oracle 验收并记录版本/pass/fail/skip；验证外键/中间表、拒绝与事务边界；文档明确非主键 MERGE 不回填目标 ID，核实 IDENTITY 门槛；不把模拟或 skip 记作通过 | ☐ |
+| G39 | Oracle 集成测试与文档 | OB_ORACLE_DSN：CRUD/迁移、标识符扫描、默认值/NULL、批量主键回填、受限 MERGE；新建 belongs-to/has-one/has-many/many-to-many、混合新旧对象、FullSaveAssociations、Save(slice)；NUMBER 边界、Object 预处理/文本负例、Array 存储限制；与 G03 同步编译检查 | G31–G38 | 真实 Oracle 验收并记录版本/pass/fail/skip；验证外键/中间表、拒绝与事务边界；文档明确非主键 MERGE 不回填目标 ID，核实 IDENTITY 门槛；不把模拟或 skip 记作通过 | ◐ |
 
 ## 5. M3：增强（可选项，按需排期）
 

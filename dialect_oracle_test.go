@@ -201,7 +201,8 @@ func TestOracleDryRunQuoting(t *testing.T) {
 	}
 }
 
-func TestOracleScanMapsUppercaseColumns(t *testing.T) {	pool := newFakePool(t)
+func TestOracleScanMapsUppercaseColumns(t *testing.T) {
+	pool := newFakePool(t)
 	pool.server.reply("SELECT ob_version() FROM dual", testOBCEVersion)
 
 	type oracleRow struct {
