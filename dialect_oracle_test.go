@@ -225,6 +225,30 @@ func TestOracleScanMapsUppercaseColumns(t *testing.T) {	pool := newFakePool(t)
 	}
 }
 
+func TestOracleDryRunLimitClause(t *testing.T) {
+	db, _, _ := openOracleWithFakeDB(t)
+
+	type oracleUser struct {
+		ID   uint   `gorm:"primaryKey"`
+		Name string `gorm:"size:64"`
+	}
+
+	query := func(apply func(*gorm.DB) *gorm.DB) string {
+		tx := apply(db.Session(&gorm.Session{DryRun: true}).Model(&oracleUser{}).Where(`"NAME" = ?`, testUserName))
+		return tx.Find(&[]oracleUser{}).Statement.SQL.String()
+	}
+
+	if got := query(func(tx *gorm.DB) *gorm.DB { return tx.Limit(5) }); got != `SELECT * FROM "ORACLE_USERS" WHERE "NAME" = ? FETCH FIRST ? ROWS ONLY` {
+		t.Fatalf("limit-only SQL = %q", got)
+	}
+	if got := query(func(tx *gorm.DB) *gorm.DB { return tx.Offset(2) }); got != `SELECT * FROM "ORACLE_USERS" WHERE "NAME" = ? OFFSET ? ROWS` {
+		t.Fatalf("offset-only SQL = %q", got)
+	}
+	if got := query(func(tx *gorm.DB) *gorm.DB { return tx.Limit(5).Offset(2) }); got != `SELECT * FROM "ORACLE_USERS" WHERE "NAME" = ? OFFSET ? ROWS FETCH FIRST ? ROWS ONLY` {
+		t.Fatalf("limit+offset SQL = %q", got)
+	}
+}
+
 func TestOracleDataTypeOf(t *testing.T) {
 	d := dialectorWithMode(t, ob.ModeOracle)
 

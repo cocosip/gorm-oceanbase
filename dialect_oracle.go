@@ -17,10 +17,35 @@ func registerOracleCallbacks(db *gorm.DB) {
 	callbacks.RegisterDefaultCallbacks(db, &callbacks.Config{})
 }
 
-// oracleClauseBuilders returns the Oracle clause rewrites. The LIMIT rewrite
-// to OFFSET...FETCH FIRST arrives with the Oracle LIMIT support task.
+// oracleClauseBuilders returns the Oracle clause rewrites.
 func oracleClauseBuilders(_ *Dialector) map[string]clause.ClauseBuilder {
-	return map[string]clause.ClauseBuilder{}
+	return map[string]clause.ClauseBuilder{
+		clauseLimit: buildFetchFirst,
+	}
+}
+
+// buildFetchFirst renders GORM's LIMIT clause as Oracle row-limiting syntax:
+// OFFSET n ROWS FETCH FIRST m ROWS ONLY.
+func buildFetchFirst(c clause.Clause, builder clause.Builder) {
+	limit, ok := c.Expression.(clause.Limit)
+	if !ok {
+		c.Build(builder)
+		return
+	}
+
+	if limit.Offset > 0 {
+		writeString(builder, "OFFSET ")
+		builder.AddVar(builder, limit.Offset)
+		writeString(builder, " ROWS")
+	}
+	if limit.Limit != nil && *limit.Limit >= 0 {
+		if limit.Offset > 0 {
+			writeByte(builder, ' ')
+		}
+		writeString(builder, "FETCH FIRST ")
+		builder.AddVar(builder, *limit.Limit)
+		writeString(builder, " ROWS ONLY")
+	}
 }
 
 // oracleQuoteTo quotes identifiers with double quotes. OceanBase's Oracle mode
