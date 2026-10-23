@@ -216,7 +216,7 @@ func TestOracleScanMapsUppercaseColumns(t *testing.T) {
 
 	selectSQL := db.Session(&gorm.Session{DryRun: true}).
 		Model(&oracleRow{}).Where(`"NAME" = ?`, testUserName).Find(&[]oracleRow{}).Statement.SQL.String()
-	pool.server.replyRows(selectSQL, []string{"NAME"}, [][]driver.Value{{testUserName}})
+	pool.server.replyRows(selectSQL, []string{testPhysicalName}, [][]driver.Value{{testUserName}})
 
 	var rows []oracleRow
 	if err := db.Model(&oracleRow{}).Where(`"NAME" = ?`, testUserName).Find(&rows).Error; err != nil {
@@ -1049,10 +1049,10 @@ func TestOracleGetIndexes(t *testing.T) {
 func TestOracleColumnTypes(t *testing.T) {
 	db, pool := openOracleArticlesMigratorDB(t, testExplicitVersion)
 	pool.server.replyRows(oracleColumnTypesSQL,
-		[]string{"COLUMN_NAME", "DATA_DEFAULT", "NULLABLE_FLAG", "DATA_TYPE", "CHAR_LENGTH", "DATA_PRECISION", "DATA_SCALE"},
+		testOracleColumnNames,
 		[][]driver.Value{
 			{"ID", `"ISEQ$$_123456" ` + "\n", int64(0), "NUMBER", int64(0), int64(10), int64(0)},
-			{"TITLE", nil, int64(1), "VARCHAR2", int64(512), nil, nil},
+			{"TITLE", nil, int64(1), testOracleVarchar2, int64(512), nil, nil},
 		},
 	)
 

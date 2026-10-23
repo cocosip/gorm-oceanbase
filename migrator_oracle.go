@@ -3,12 +3,19 @@ package oceanbase
 import (
 	"database/sql"
 	"fmt"
+	"regexp"
+	"strconv"
 	"strings"
 
 	"gorm.io/gorm"
 	"gorm.io/gorm/clause"
 	"gorm.io/gorm/migrator"
 	"gorm.io/gorm/schema"
+)
+
+var (
+	oracleQualifiedTable   = regexp.MustCompile(`^\s*("(?:[^"]|"")*"|[^".\s]+)\s*\.\s*("(?:[^"]|"")*"|[^".\s]+)\s*$`)
+	oracleNumberDefinition = regexp.MustCompile(`(?i)^NUMBER\s*\(\s*([0-9]+)\s*(?:,\s*(-?[0-9]+)\s*)?\)$`)
 )
 
 // Oracle data dictionary queries. Views come from the Oracle compatibility
@@ -79,15 +86,22 @@ func (m *oracleMigrator) HasSequence(name string) bool {
 
 // CurrentDatabase resolves the current schema.
 func (m *oracleMigrator) CurrentDatabase() (name string) {
-	_ = m.DB.Raw(oracleCurrentSchemaSQL).Row().Scan(&name)
+	queryTx, _ := m.GetQueryAndExecTx()
+	_ = queryTx.Raw(oracleCurrentSchemaSQL).Row().Scan(&name)
 	return
 }
 
 // CurrentSchema splits a schema-qualified table name or defaults to the
 // current schema.
-func (m *oracleMigrator) CurrentSchema(_ *gorm.Statement, table string) (string, string) {
-	if tables := strings.Split(table, "."); len(tables) == 2 {
-		return oracleIdentifierName(tables[0]), tables[1]
+func (m *oracleMigrator) CurrentSchema(stmt *gorm.Statement, table string) (string, string) {
+	names := []string{table}
+	if stmt != nil && stmt.TableExpr != nil && len(stmt.TableExpr.Vars) == 0 {
+		names = append(names, stmt.TableExpr.SQL)
+	}
+	for _, name := range names {
+		if parts := oracleQualifiedTable.FindStringSubmatch(name); len(parts) != 0 {
+			return oracleIdentifierName(parts[1]), parts[2]
+		}
 	}
 	return m.CurrentDatabase(), table
 }
@@ -182,6 +196,9 @@ func (m *oracleMigrator) ColumnTypes(value interface{}) ([]gorm.ColumnType, erro
 
 			column.NullableValue = sql.NullBool{Bool: nullableFlag.Int64 == 1, Valid: nullableFlag.Valid}
 			column.DefaultValueValue = sql.NullString{String: strings.TrimSpace(defaultValue.String), Valid: defaultValue.Valid}
+			if strings.EqualFold(column.DefaultValueValue.String, "NULL") {
+				column.DefaultValueValue = sql.NullString{}
+			}
 			if strings.Contains(defaultValue.String, "ISEQ$$") {
 				column.AutoIncrementValue = sql.NullBool{Bool: true, Valid: true}
 			}
@@ -286,26 +303,102 @@ func (m *oracleMigrator) AddColumn(value interface{}, name string) error {
 	return m.Migrator.AddColumn(value, name)
 }
 
-// AlterColumn refuses turning a column into auto-increment on unverified
-// versions.
+// AlterColumn preserves IDENTITY and explicitly clears removed column properties.
 func (m *oracleMigrator) AlterColumn(value interface{}, field string) error {
 	return m.RunWithValue(value, func(stmt *gorm.Statement) error {
 		if stmt.Schema != nil {
 			if f := stmt.Schema.LookUpField(field); f != nil {
-				return m.DB.Exec("ALTER TABLE ? MODIFY (? ?)", m.CurrentTable(stmt), clause.Column{Name: f.DBName}, m.Migrator.FullDataTypeOf(f)).Error
+				queryTx, _ := m.GetQueryAndExecTx()
+				columns, err := queryTx.Migrator().ColumnTypes(value)
+				if err != nil {
+					return err
+				}
+				for _, column := range columns {
+					if column.Name() != f.DBName {
+						continue
+					}
+					copyField := *f
+					nullable, known := column.Nullable()
+					if known && !nullable {
+						// Oracle rejects a redundant NOT NULL modification.
+						copyField.NotNull = false
+					}
+					expr := m.Migrator.FullDataTypeOf(&copyField)
+					if _, hasDefault := column.DefaultValue(); hasDefault && !f.HasDefaultValue && !f.PrimaryKey && !f.AutoIncrement {
+						expr.SQL += " DEFAULT NULL"
+					}
+					if known && !nullable && !f.NotNull && !f.PrimaryKey && !f.AutoIncrement {
+						expr.SQL += " NULL"
+					}
+					return m.DB.Exec("ALTER TABLE ? MODIFY (? ?)", m.CurrentTable(stmt), clause.Column{Name: f.DBName}, expr).Error
+				}
+				return fmt.Errorf("column %q not found", f.DBName)
 			}
 		}
 		return fmt.Errorf("failed to look up field with name: %s", field)
 	})
 }
 
-// MigrateColumn compares inferred integer precision rather than Go's zero tag value.
+// MigrateColumn compares Oracle NUMBER precision and scale, including inferred integers.
 func (m *oracleMigrator) MigrateColumn(value interface{}, field *schema.Field, columnType gorm.ColumnType) error {
+	if field.IgnoreMigration {
+		return nil
+	}
 	copyField := *field
 	if field.DataType == schema.Int || field.DataType == schema.Uint {
 		copyField.Precision = oracleNumberPrecision(field)
 	}
+	if strings.EqualFold(columnType.DatabaseTypeName(), "NUMBER") {
+		dataType := strings.TrimSpace(m.DataTypeOf(&copyField))
+		parts := oracleNumberDefinition.FindStringSubmatch(dataType)
+		precision, scale, known := columnType.DecimalSize()
+		alterNumber := strings.EqualFold(dataType, "NUMBER") && known
+		if len(parts) != 0 {
+			if parts[2] == "" {
+				parts[2] = "0"
+			}
+			wantPrecision, precisionErr := strconv.ParseInt(parts[1], 10, 64)
+			wantScale, scaleErr := strconv.ParseInt(parts[2], 10, 64)
+			if precisionErr != nil || scaleErr != nil {
+				return fmt.Errorf("invalid NUMBER definition: %s", dataType)
+			}
+			alterNumber = !known || precision != wantPrecision || scale != wantScale
+		}
+		if alterNumber {
+			if err := m.AlterColumn(value, field.DBName); err != nil {
+				return err
+			}
+			return m.MigrateColumnUnique(value, field, columnType)
+		}
+	}
 	return m.Migrator.MigrateColumn(value, &copyField, columnType)
+}
+
+// MigrateColumnUnique synchronizes the named UNIQUE constraint, leaving indexes intact.
+func (m *oracleMigrator) MigrateColumnUnique(value interface{}, field *schema.Field, _ gorm.ColumnType) error {
+	if field.PrimaryKey || field.IgnoreMigration {
+		return nil
+	}
+	return m.RunWithValue(value, func(stmt *gorm.Statement) error {
+		owner, table := m.CurrentSchema(stmt, stmt.Table)
+		tableName := stmt.Table
+		if stmt.Schema != nil {
+			tableName = stmt.Schema.Table
+		}
+		name := m.DB.NamingStrategy.UniqueName(tableName, field.DBName)
+		var count int64
+		queryTx, _ := m.GetQueryAndExecTx()
+		if err := queryTx.Raw(oracleHasConstraintSQL, owner, oracleIdentifierName(table), oracleIdentifierName(name)).Row().Scan(&count); err != nil {
+			return err
+		}
+		if count == 0 && field.Unique {
+			return m.DB.Exec("ALTER TABLE ? ADD CONSTRAINT ? UNIQUE (?)", m.CurrentTable(stmt), clause.Column{Name: name}, clause.Column{Name: field.DBName}).Error
+		}
+		if count > 0 && !field.Unique {
+			return m.DB.Exec("ALTER TABLE ? DROP CONSTRAINT ?", m.CurrentTable(stmt), clause.Column{Name: name}).Error
+		}
+		return nil
+	})
 }
 
 // HasIndex uses the Oracle dictionary and accepts model field names like GORM.

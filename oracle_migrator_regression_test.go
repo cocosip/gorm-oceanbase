@@ -23,11 +23,12 @@ func TestOracleAutoMigrateExistingColumns(t *testing.T) {
 	db, _, pool := openOracleWithFakeDB(t)
 	pool.server.reply(oracleCurrentSchemaSQL, "U")
 	pool.server.reply(oracleHasTableSQL, "1")
+	pool.server.reply(oracleHasConstraintSQL, "0")
 	pool.server.replyRows(oracleColumnTypesSQL,
-		[]string{testOracleColumnName, "DATA_DEFAULT", "NULLABLE_FLAG", "DATA_TYPE", "CHAR_LENGTH", "DATA_PRECISION", "DATA_SCALE"},
+		testOracleColumnNames,
 		[][]driver.Value{
 			{"ID", nil, int64(0), testOracleNumber, int64(0), int64(20), int64(0)},
-			{"NAME", nil, int64(1), "VARCHAR2", int64(64), nil, nil},
+			{testPhysicalName, nil, int64(1), testOracleVarchar2, int64(64), nil, nil},
 			{"AGE", nil, int64(1), testOracleNumber, int64(0), int64(19), int64(0)},
 		})
 	pool.server.reply("SELECT count(*) FROM all_indexes WHERE table_owner = ? AND table_name = ? AND index_name = ?", "1")
@@ -41,6 +42,10 @@ func TestOracleAutoMigrateExistingColumns(t *testing.T) {
 
 func TestOracleIndexAndAlterSQL(t *testing.T) {
 	db, _, pool := openOracleWithFakeDB(t)
+	pool.server.reply(oracleCurrentSchemaSQL, "U")
+	pool.server.replyRows(oracleColumnTypesSQL, testOracleColumnNames, [][]driver.Value{
+		{testPhysicalName, nil, int64(1), testOracleVarchar2, int64(64), nil, nil},
+	})
 	if err := db.Migrator().CreateTable(&oracleMigrationRow{}); err != nil {
 		t.Fatal(err)
 	}
