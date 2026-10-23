@@ -45,3 +45,7 @@ Thumbs.db
 .cache/
 docs/superpowers/
 .superpowers/
+
+# Local acceptance reports and target configuration
+gorm-obtest-report.json
+tests/acceptance/*.local.json

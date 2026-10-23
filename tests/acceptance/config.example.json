@@ -1,0 +1,30 @@
+{
+  "timeout": "2m",
+  "cleanup_timeout": "30s",
+  "targets": [
+    {
+      "name": "mysql",
+      "mode": "mysql",
+      "dsn_env": "OB_MYSQL_DSN",
+      "mysql_profile": 8
+    },
+    {
+      "name": "mysql_prepared",
+      "mode": "mysql",
+      "dsn_env": "OB_MYSQL_DSN",
+      "mysql_profile": 8,
+      "prepare_stmt": true
+    },
+    {
+      "name": "oracle",
+      "mode": "oracle",
+      "dsn_env": "OB_ORACLE_DSN"
+    },
+    {
+      "name": "oracle_prepared",
+      "mode": "oracle",
+      "dsn_env": "OB_ORACLE_DSN",
+      "prepare_stmt": true
+    }
+  ]
+}

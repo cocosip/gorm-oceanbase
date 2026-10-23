@@ -115,6 +115,7 @@ Config.Mode（非零） > DSN 显式 mode / DSNConfig 非零 Mode > 默认 MySQL
 
 ## 文档
 
+- [真实租户验收程序](tests/acceptance/README.md)：`cmd/gorm-obtest`，通过配置切换 MySQL/Oracle，覆盖类型、字段元数据、迁移和 GORM 行为；提供离线 `-list` / `-check`，尚未连接真实租户验收
 - [设计方案](docs/design.md)：架构、配置、双模式行为、错误翻译与测试策略
 - [开发计划与进度](docs/development.md)：任务分解、依赖与验收状态
 
