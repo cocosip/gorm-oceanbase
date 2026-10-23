@@ -5,8 +5,8 @@ Dialector. One JSON configuration can select MySQL, Oracle, or all targets in se
 `tests/integration` suite remains available; this command adds a type matrix, field metadata,
 independent object cleanup, and JSON reports that can be saved.
 
-Live acceptance tests ran against OceanBase **4.4.2.2** in both modes on 2026-10-23. All applicable
-MySQL cases passed in that run; Oracle still had failures. See the live test results below.
+Live acceptance tests ran against OceanBase **4.4.2.2** in both modes on 2026-10-24. All applicable
+cases in the supported MySQL and Oracle column matrix passed. See the live test results below.
 
 ## Offline inspection and validation
 
@@ -30,7 +30,7 @@ Forced termination or network loss can leave objects behind; their names appear 
 Configuration references environment variable names only, without embedding passwords or DSNs.
 The example has four targets covering plain GORM execution and cached `PrepareStmt` execution in both
 modes. `prepare_stmt` controls GORM's statement cache; it is separate from the underlying driver's
-client-side parameter interpolation setting. OBJECT/collection values require server-side preparation.
+client-side parameter interpolation setting. OBJECT values require server-side preparation.
 Statements remain cached within each case and are synchronously released at case completion, then
 released again after object cleanup. This prevents random table names from exhausting server prepared
 statement handles across the suite; the tool does not change server limits.
@@ -67,7 +67,7 @@ Add a `cases` array to the configuration to run selected cases, for example:
 
 ## Coverage
 
-Use `-list` for exact names and applicable modes. There are currently 106 independent cases:
+Use `-list` for exact names and applicable modes. There are currently 104 independent cases:
 
 | Area | Coverage |
 | --- | --- |
@@ -77,7 +77,7 @@ Use `-list` for exact names and applicable modes. There are currently 106 indepe
 | NULL | Go pointers and sql.NullBool/Int16/Int32/Int64/Float64/String/Time, distinguishing NULL from valid zero values |
 | Time | time.Time; second/millisecond/microsecond precision; DATE/DATETIME/TIMESTAMP, MySQL TIME/YEAR, Oracle TIMESTAMP(9); string TIME values including negative durations and durations over 24 hours |
 | MySQL-specific types | CHAR, TEXT/MEDIUMTEXT/LONGTEXT, VARBINARY/BLOB, ENUM, SET, JSON |
-| Oracle-specific types | NUMBER, CHAR/NCHAR/NVARCHAR2, RAW/BLOB/CLOB/NCLOB, INTERVAL YM/DS, time zone/local time zone timestamps, ROWID, OBJECT, and collection columns |
+| Oracle-specific types | NUMBER, CHAR/NCHAR/NVARCHAR2, RAW/BLOB/CLOB, INTERVAL YM/DS, time zone/local time zone timestamps, ROWID, and OBJECT columns |
 | Fields and metadata | Actual database type, length, precision/scale, nullability, defaults; primary key/auto-increment/comment metadata exposed by GORM; NOT NULL, ignored fields, and custom/explicit-case column names |
 | Migrations and constraints | Incremental/repeated AutoMigrate, existing data preservation, column rename/drop, composite primary keys, composite unique indexes and rename/drop, foreign keys, CHECK, MySQL column comments |
 | GORM behavior | CRUD, explicit/generated keys, batch/default-only inserts, maps and explicit NULL, zero-value updates, pagination, Upsert/DoNothing, error translation, transactions/savepoints, hooks, timestamps, soft deletion, four association types/Preload/Join/FullSaveAssociations, Oracle sequences |
@@ -89,11 +89,13 @@ validated. Floating-point tests use ordinary, exactly representable values and d
 coverage of floating-point values or server SQL types.
 
 Oracle treats empty VARCHAR2 values as NULL. ROWID values are read from the server, never fabricated.
-OBJECT cases create actual named types and read/write them through GORM fields. Collection columns
-require real server storage support. Unsupported features, insufficient permissions, and prepared
-statement/LOB/type descriptor errors remain failures, without automatic fallback or skips based on
-historical results. PL/SQL arrays, cursors, XA, spatial types, and other driver-specific APIs are outside
-this GORM acceptance tool's scope.
+OBJECT cases create actual named types and read/write them through GORM fields. Native NCLOB and
+nested-table columns are outside the supported column matrix: official Connector/J and the Go driver
+both confirm server rejection on the tested 4.4.2.2 tenant. Their old case names are rejected during
+configuration validation. See the [independent Java comparison](driverissues/oracle-ddl-support.md).
+For retained cases, permission, prepared statement/LOB/type descriptor, and unexpected server errors
+remain failures, without automatic fallback or skips. PL/SQL arrays, cursors, XA, spatial types, and
+other driver-specific APIs are outside this GORM acceptance tool's scope.
 
 ## Reports and exit codes
 
@@ -118,6 +120,85 @@ compiled binary.
 
 Pass counts prove only the target/version/configuration tested in that run. They do not establish
 complete compatibility with other versions or deployments.
+
+## 2026-10-24 supported-scope verification
+
+Official Connector/J 2.4.14 independently reproduced the Go driver's NCLOB (902), nested-table
+column (600/-4007), and NESTED TABLE storage-clause (900) rejections in both text and native
+server-prepared execution on the same 4.4.2.2 tenant. CLOB, NVARCHAR2 and named collection type
+creation succeeded. See the [independent comparison results](driverissues/oracle-ddl-support.md).
+
+The native NCLOB and nested-table column definitions were unsuitable for this supported target.
+Their two cases and unused collection-column implementation were removed, reducing the regular
+matrix from 106 to 104 cases. Old configurations selecting them are rejected before connection.
+The regular tool no longer sends those definitions. Only the results of the independent Java
+diagnostic experiment are retained. Existing failure reports below are unchanged historical data.
+
+Fresh run: published go-oceanbase v0.1.4, OceanBase 4.4.2.2, GORM v1.31.2,
+Go 1.27.2, Windows amd64; ID `0ad4c1c7cea6`; duration 1m34.1663097s.
+
+| Target | MySQL profile | pass | fail | skip | not_applicable |
+| --- | --- | --- | --- | --- | --- |
+| mysql | 8 | 87 | 0 | 0 | 17 |
+| mysql_prepared | 8 | 87 | 0 | 0 | 17 |
+| oracle | — | 88 | 0 | 0 | 16 |
+| oracle_prepared | — | 88 | 0 | 0 | 16 |
+| **Total** | | **350** | **0** | **0** | **66** |
+
+The command exits 0. There are no cleanup errors and an independent catalog check found zero
+owned objects remaining in either schema; the Java probe also verified zero remaining objects.
+Build, uncached unit tests, vet, integration compilation and both lint selections pass. A regression
+first reproduced acceptance of the unsupported case names, then passed after their removal.
+No library mapping or go-oceanbase implementation was changed for this scope correction.
+MySQL profile 5, the full older integration suite, older servers and OBProxy were not rerun.
+
+Ignored evidence: `.cache/live-v014-supported-20261024.json`,
+`.cache/live-v014-supported-matrix-20261024.log`,
+`.cache/live-v014-supported-cleanup-20261024.log`, and
+`.cache/jdbc-compare/oracle-ddl-20261024.log`.
+
+## 2026-10-24 live test results before scope correction
+
+Baseline: published `go-oceanbase v0.1.4`, OceanBase 4.4.2.2, GORM v1.31.2,
+Go 1.27.2, Windows amd64. The executable's module information confirms v0.1.4;
+the earlier local-driver workspace was disabled. Run ID: `6efcd3844af7`;
+duration: 1m36.4737065s.
+
+| Target | MySQL profile | pass | fail | skip | not_applicable |
+| --- | --- | --- | --- | --- | --- |
+| mysql | 8 | 87 | 0 | 0 | 19 |
+| mysql_prepared | 8 | 87 | 0 | 0 | 19 |
+| oracle | — | 88 | 2 | 0 | 16 |
+| oracle_prepared | — | 88 | 2 | 0 | 16 |
+| **Total** | | **350** | **4** | **0** | **70** |
+
+All float32, float64, nullable-float and pointer variants passed in both Oracle
+targets. The separate GORM-free `TestOracleBinaryDoubleRange` passed for ordinary
+and explicit prepared execution, including 1.5, 1.1, 1e200, positive/negative
+MaxFloat64 and smallest nonzero float64. An independent unparameterized
+`SELECT TO_CHAR(V)` probe verified that the four previously corrupted values
+parse back to the exact input float64 in both execution paths (8/8 comparisons).
+`TestOracleMigrationColumnChanges` also passed, including its mixed-parameter
+INSERT, existing-data preservation, and constraint changes. These focused tests
+are separate from the matrix counts above.
+
+The remaining failures occur at `create_table`: `types.oracle_nclob` reports
+server code 902 and `types.oracle_collection` reports code 600, once per Oracle
+target. These are the previously reproduced server DDL capability limits;
+they were not converted to skips. The matrix therefore exits with code 1.
+
+There were no cleanup errors. An independent catalog inventory found zero objects
+owned by this matrix run in either schema and no remaining focused migration
+table. The direct stored-value probe also verified its own table cleanup.
+Build, unit tests, vet, integration compilation, module checks, and ordinary plus
+integration-tagged golangci-lint passed. The full older integration suite and
+MySQL profile 5 matrix were not rerun in this round.
+
+Ignored local evidence: `.cache/live-v014-20261024.json`,
+`.cache/live-v014-regressions-20261024.log`,
+`.cache/live-v014-stored-values-20261024.log`, and
+`.cache/live-v014-cleanup-20261024.log`. See the
+[binary-double diagnosis](driverissues/oracle-binary-double.md) for protocol details.
 
 ## 2026-10-23 live test results
 

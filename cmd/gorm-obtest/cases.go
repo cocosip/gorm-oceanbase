@@ -13,7 +13,6 @@ func caseDefinitions() []caseDefinition {
 		caseDefinition{"types.empty_string", modeBoth, "empty string versus SQL NULL semantics", runEmptyString},
 		caseDefinition{"types.oracle_rowid", modeOracle, "generated ROWID scan and lookup", runRowID},
 		caseDefinition{"types.oracle_object", modeOracle, "named OBJECT column via GORM with exact NUMBER attributes", runObject},
-		caseDefinition{"types.oracle_collection", modeOracle, "named collection column storage and ordered nullable elements", runCollection},
 		caseDefinition{"schema.foreign_key", modeBoth, "foreign key creation, metadata, enforcement, error translation and drop", runForeignKey},
 		caseDefinition{"schema.check", modeBoth, "CHECK creation, metadata, enforcement and drop", runCheckConstraint},
 		caseDefinition{"schema.fields", modeBoth, "nullable, NOT NULL, defaults, lengths and ignored columns", runFieldConstraints},

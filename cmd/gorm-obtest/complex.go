@@ -35,27 +35,3 @@ func runObject(s *scenario) error {
 	}
 	return scalarCase(f, false).run(s)
 }
-
-func runCollection(s *scenario) error {
-	name, err := s.createType("AS TABLE OF NUMBER(38,9)")
-	if err != nil {
-		return err
-	}
-	value := obtypes.Array{Type: name, Elements: []any{obtypes.Number(decimalSample), nil, obtypes.Number("-42.5")}}
-	f := scalar("oracle_collection", modeOracle, "type:"+name, value)
-	f.compare = func(_, got any) bool {
-		array, ok := got.(obtypes.Array)
-		if !ok || array.Type != name || len(array.Elements) != 3 || array.Elements[1] != nil {
-			return false
-		}
-		first, ok := array.Elements[0].(obtypes.Number)
-		if !ok {
-			return false
-		}
-		last, ok := array.Elements[2].(obtypes.Number)
-		return ok && equalDecimal(obtypes.Number(decimalSample), first) && equalDecimal(obtypes.Number("-42.5"), last)
-	}
-	// Some OceanBase releases reject collection-valued columns. Keep that DDL
-	// failure visible; PL/SQL array support does not prove GORM column storage.
-	return scalarCase(f, false).run(s)
-}

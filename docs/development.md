@@ -3,17 +3,23 @@
 This document defines development tasks from [design.md](design.md). Each task's status column tracks
 current progress directly.
 
-**Current progress: 22 / 32 completed, 7 in progress, 3 not started, 0 blocked. Next: revalidate Oracle
-failures and complete the remaining G22/G39 integration coverage.**
+**Current progress: 22 / 32 completed, 7 in progress, 3 not started, 0 blocked. Next: complete the
+remaining G22/G39 integration coverage and compatibility validation.**
 
-**Latest validation round**: the dependency was upgraded to `go-oceanbase v0.1.2`. The standalone
-`cmd/gorm-obtest` tool ran a four-target main matrix against OceanBase 4.4.2.2:
-346 pass / 8 fail / 0 skip / 70 not_applicable. Two supplemental MySQL profile 5 targets produced
-174 pass / 0 fail / 0 skip / 38 not_applicable. All applicable MySQL cases passed; Oracle still has
-failures. See the [live test details](../tests/acceptance/README.md). Dropped rows in MySQL default-only
-batch inserts and acceptance-tool issues were fixed, and objects created by that run were cleaned up.
-The older integration suite with fixed table names was not executed in that schema. G22/G39 remain
-partially complete; one server version does not justify broader compatibility claims.
+**Latest validation round (2026-10-24)**: the dependency was upgraded to published
+`go-oceanbase v0.1.4`, without a local replacement. The standalone `cmd/gorm-obtest` tool ran a
+four-target supported-scope matrix against OceanBase 4.4.2.2:
+350 pass / 0 fail / 0 skip / 66 not_applicable.
+All applicable MySQL profile 8 cases passed. Oracle float cases, the independent binary-double
+readback regression, and the focused column-migration integration test passed. Official Connector/J
+2.4.14 independently confirmed native NCLOB and nested-table column DDL rejection in both text and
+server-prepared execution. Those two unsuitable cases were removed from the regular matrix; their
+old names now fail configuration validation before connecting. The original 350-pass/4-fail report
+is retained as history. No cleanup errors or owned objects remained. See the
+[live test details](../tests/acceptance/README.md).
+The complete older integration suite and supplemental MySQL profile 5 matrix were not rerun;
+the previous profile 5 results remain historical. G22/G39 remain partially complete; one server
+version does not justify broader compatibility claims.
 
 **Maintenance rules**:
 
@@ -45,7 +51,7 @@ partially complete; one server version does not justify broader compatibility cl
 
 | ID | Task | Scope | Dependencies | Acceptance | Status |
 | --- | --- | --- | --- | --- | --- |
-| G01 | Initialize module | `go.mod`: module github.com/cocosip/gorm-oceanbase, go 1.26; pin development baselines `gorm.io/gorm@v1.31.2` (current latest) and `github.com/cocosip/go-oceanbase@v0.1.2` (remote module, no replace); earlier GORM support requires a version matrix | — | `go build ./...` passes | ✅ |
+| G01 | Initialize module | `go.mod`: module github.com/cocosip/gorm-oceanbase, go 1.26; pin development baselines `gorm.io/gorm@v1.31.2` (current latest) and `github.com/cocosip/go-oceanbase@v0.1.4` (remote module, no replace); earlier GORM support requires a version matrix | — | `go build ./...` passes | ✅ |
 | G02 | README skeleton | Project purpose, quick start matching design.md §3 entry points, documentation index | G01 | Review passes | ✅ |
 | G03 | CI skeleton | GitHub Actions: build, vet, offline tests, golangci-lint using existing .golangci.yml; add `go test -tags=integration ./tests/integration -run '^$'` after integration packages exist | G01 | Routine skeleton checks pass; integration compilation passes after G22/G39 exist; skips do not count as live acceptance | ✅ |
 

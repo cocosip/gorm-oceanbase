@@ -11,6 +11,7 @@ import (
 	"encoding/hex"
 	"errors"
 	"fmt"
+	"math"
 	"os"
 	"testing"
 	"time"
@@ -66,6 +67,43 @@ func errorCode(err error) string {
 		return "driver ErrBind"
 	}
 	return fmt.Sprintf("%T (raw message omitted)", err)
+}
+
+func TestOracleBinaryDoubleRange(t *testing.T) {
+	db, ctx, name := oracleTable(t, "ID NUMBER PRIMARY KEY, V BINARY_DOUBLE")
+	values := []float64{1.5, 1.1, 1e200, math.MaxFloat64, -math.MaxFloat64, math.SmallestNonzeroFloat64, -math.SmallestNonzeroFloat64}
+	for _, prepared := range []bool{false, true} {
+		t.Run(fmt.Sprintf("prepared_%v", prepared), func(t *testing.T) {
+			query := "INSERT INTO " + name + " (ID,V) VALUES (?,?)"
+			insert := db.ExecContext
+			if prepared {
+				stmt, err := db.PrepareContext(ctx, query)
+				if err != nil {
+					t.Fatalf("prepare: %s", errorCode(err))
+				}
+				defer func() { _ = stmt.Close() }()
+				insert = func(ctx context.Context, _ string, args ...any) (sql.Result, error) {
+					return stmt.ExecContext(ctx, args...)
+				}
+			}
+			for i, want := range values {
+				id := i + 1
+				if prepared {
+					id += len(values)
+				}
+				if _, err := insert(ctx, query, id, want); err != nil {
+					t.Fatalf("insert %g: %s", want, errorCode(err))
+				}
+				var got float64
+				if err := db.QueryRowContext(ctx, "SELECT V FROM "+name+" WHERE ID=?", id).Scan(&got); err != nil {
+					t.Fatalf("read %g: %s", want, errorCode(err))
+				}
+				if got != want {
+					t.Fatalf("roundtrip got=%g want=%g", got, want)
+				}
+			}
+		})
+	}
 }
 
 func TestOracleBlobBytes(t *testing.T) {

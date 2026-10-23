@@ -30,6 +30,15 @@ func TestConfigurationValidation(t *testing.T) {
 	}
 }
 
+func TestUnsupportedOracleColumnCasesRejectedBeforeExecution(t *testing.T) {
+	for _, name := range []string{"types.oracle_nclob", "types.oracle_collection"} {
+		input := `{"targets":[{"name":"oracle","mode":"oracle","dsn_env":"TEST_DSN"}],"cases":["` + name + `"]}`
+		if _, err := readConfig(strings.NewReader(input)); err == nil {
+			t.Errorf("accepted unsupported column case %s", name)
+		}
+	}
+}
+
 func TestReportExitCodes(t *testing.T) {
 	for _, tc := range []struct {
 		statuses []string

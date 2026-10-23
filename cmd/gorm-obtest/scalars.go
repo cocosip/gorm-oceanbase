@@ -90,7 +90,6 @@ func scalarFields() []scalarField {
 		scalar("oracle_raw", modeOracle, "type:RAW(32)", obtypes.Raw{0, 255}),
 		scalar("oracle_blob", modeOracle, "type:BLOB", bytes.Repeat([]byte{0, 255}, 4096)),
 		scalar("oracle_clob", modeOracle, "type:CLOB", unicodeSample, strings.Repeat("c", 10000)),
-		scalar("oracle_nclob", modeOracle, "type:NCLOB", obtypes.NString(strings.Repeat("中文", 3000))),
 		scalar("oracle_interval_ym", modeOracle, "type:INTERVAL YEAR(4) TO MONTH", obtypes.IntervalYM("+0123-04"), obtypes.IntervalYM("-0001-02")),
 		scalar("oracle_interval_ds", modeOracle, "type:INTERVAL DAY(4) TO SECOND(9)", obtypes.IntervalDS("+0012 03:04:05.123456789")),
 		scalar("oracle_timestamp_tz", modeOracle, "type:TIMESTAMP(9) WITH TIME ZONE", obtypes.TimestampTZ("2024-06-01 12:30:45.123456789 +08:00")),

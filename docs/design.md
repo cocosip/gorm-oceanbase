@@ -7,7 +7,7 @@ See [development.md](development.md) for implementation and acceptance status.
 - Module path: `github.com/cocosip/gorm-oceanbase`; package name: `oceanbase`
 - Development baseline: `gorm.io/gorm` v1.31.2 (the current latest version); v1.25+ is a compatibility
   target, with support claims requiring a completed version matrix
-- Driver baseline: `github.com/cocosip/go-oceanbase` **v0.1.2**
+- Driver baseline: `github.com/cocosip/go-oceanbase` **v0.1.4**
 - Go version: 1.26, as required by the underlying driver
 
 ---
@@ -249,6 +249,11 @@ limit every unsized string to 191.
 - Validate type creation and server storage separately. OBJECT column support does not imply named
   collection column support; PL/SQL Array binding does not imply array column storage. AutoMigrate
   does not create custom types.
+- The current GORM column matrix excludes native NCLOB and nested-table columns. Both official
+  Connector/J and go-oceanbase reproduce server rejection on 4.4.2.2; see the
+  [independent comparison](../tests/acceptance/driverissues/oracle-ddl-support.md). Use the validated
+  NCHAR/NVARCHAR2/CLOB and OBJECT paths for their documented purposes. Explicit SQL type tags still
+  pass through unchanged and do not expand server support.
 - ParseTime handles ordinary DATE/TIMESTAMP reads into `time.Time`. Time zone/local time zone results
   require matching driver Scanner types or equivalent lossless paths; do not promise automatic mapping
   of every TIMESTAMP variant to `time.Time`.
