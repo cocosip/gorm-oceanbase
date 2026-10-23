@@ -251,6 +251,39 @@ func TestOracleDryRunLimitClause(t *testing.T) {
 	}
 }
 
+func TestOracleForShareDegradesToForUpdate(t *testing.T) {
+	db, _, _ := openOracleWithFakeDB(t)
+
+	type oracleUser struct {
+		ID   uint   `gorm:"primaryKey"`
+		Name string `gorm:"size:64"`
+	}
+
+	query := func(apply func(*gorm.DB) *gorm.DB) string {
+		tx := apply(db.Session(&gorm.Session{DryRun: true}).Model(&oracleUser{}).Where(`"NAME" = ?`, testUserName))
+		return tx.Find(&[]oracleUser{}).Statement.SQL.String()
+	}
+
+	// Oracle has no shared-lock read syntax; SHARE degrades to an exclusive lock.
+	if got := query(func(tx *gorm.DB) *gorm.DB {
+		return tx.Clauses(clause.Locking{Strength: clause.LockingStrengthShare})
+	}); got != `SELECT * FROM "ORACLE_USERS" WHERE "NAME" = ? FOR UPDATE` {
+		t.Fatalf("FOR SHARE SQL = %q, want degraded FOR UPDATE", got)
+	}
+
+	// The explicit exclusive strength and lock options build unchanged.
+	if got := query(func(tx *gorm.DB) *gorm.DB {
+		return tx.Clauses(clause.Locking{Strength: clause.LockingStrengthUpdate})
+	}); got != `SELECT * FROM "ORACLE_USERS" WHERE "NAME" = ? FOR UPDATE` {
+		t.Fatalf("FOR UPDATE SQL = %q", got)
+	}
+	if got := query(func(tx *gorm.DB) *gorm.DB {
+		return tx.Clauses(clause.Locking{Strength: clause.LockingStrengthShare, Options: clause.LockingOptionsNoWait})
+	}); got != `SELECT * FROM "ORACLE_USERS" WHERE "NAME" = ? FOR UPDATE NOWAIT` {
+		t.Fatalf("FOR SHARE NOWAIT SQL = %q, want degraded FOR UPDATE NOWAIT", got)
+	}
+}
+
 func TestOracleDataTypeOf(t *testing.T) {
 	d := dialectorWithMode(t, ob.ModeOracle)
 

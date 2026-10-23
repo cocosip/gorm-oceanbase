@@ -698,6 +698,7 @@ func equalIndexes(a, b []int) bool {
 func oracleClauseBuilders(_ *Dialector) map[string]clause.ClauseBuilder {
 	return map[string]clause.ClauseBuilder{
 		clauseLimit: buildFetchFirst,
+		clauseFor:   buildOracleLocking,
 	}
 }
 
@@ -723,6 +724,18 @@ func buildFetchFirst(c clause.Clause, builder clause.Builder) {
 		builder.AddVar(builder, *limit.Limit)
 		writeString(builder, " ROWS ONLY")
 	}
+}
+
+// buildOracleLocking degrades FOR SHARE to FOR UPDATE. Oracle compatibility
+// mode has no shared-lock read syntax, so the strength is rewritten and the
+// semantic change is documented in the README (design.md §5); every other
+// locking form builds unchanged.
+func buildOracleLocking(c clause.Clause, builder clause.Builder) {
+	if locking, ok := c.Expression.(clause.Locking); ok && strings.EqualFold(locking.Strength, "SHARE") {
+		locking.Strength = "UPDATE"
+		c.Expression = locking
+	}
+	c.Build(builder)
 }
 
 // oracleQuoteTo quotes identifiers with double quotes. OceanBase's Oracle mode

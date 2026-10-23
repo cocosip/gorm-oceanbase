@@ -78,6 +78,8 @@ Config.Mode（非零） > DSN 显式 mode / DSNConfig 非零 Mode > 默认 MySQL
 
 - **标识符**：所有未加引号的标识符按大写处理（对齐 OB Oracle 折叠规则）；`gorm:"column:\"Foo\""`
   等自带引号的显式大小写名称原样保留。查询结果列按大写返回，依赖 GORM 的命名策略回退映射到模型字段。
+- **锁**：Oracle 没有 `FOR SHARE` 共享锁读语法，`clause.Locking{Strength: "SHARE"}` 会退化为
+  `FOR UPDATE`（锁语义从共享变为排他）；`UPDATE` 强度与 `NOWAIT`/`SKIP LOCKED` 选项原样输出。
 - **类型映射**：`Bool→NUMBER(1)`；`Int/Uint→NUMBER(p,0)`（int64→19、uint64→20）；`Float→NUMBER(p,s)/
   BINARY_FLOAT/BINARY_DOUBLE`；`String→VARCHAR2(默认 512，超过 4000 转 CLOB)`；`Time→TIMESTAMP(默认 6，
   带时区变体经显式 type tag 指定)`；`Bytes→RAW(≤2000)/BLOB`。`types.Object/Array` 无法从 Go 类型推断，

@@ -4,7 +4,7 @@
 
 **当前进度：已完成 22 / 32，进行中 7，未开始 3，受阻 0。下一项：G22/G39 真实租户验收（需数据库联调，按约定本轮不做）。**
 
-**本轮说明**：M2 G39 的无库交付完成：`tests/integration/oracle_test.go` 覆盖 CRUD/迁移、大写列扫描、默认值与显式 NULL、批量逐条主键回填、MERGE 边界（ON 列更新拒绝、DoNothing 保持）、错误翻译、NUMBER 边界、Object 负例与 belongs-to/has-many/many2many、混合 Save(slice)、FullSaveAssociations（`OB_ORACLE_DSN` 提供后运行，缺 DSN 一律跳过且不计通过）；README 补充 Oracle 模式章节（类型映射、标识符大小写、IDENTITY 门槛与序列、MERGE 边界、按模式隔离的错误码表）并移除 M1-only 说明。真实 Oracle 租户验收（记录版本、pass/fail/skip、IDENTITY 门槛核实）待数据库联调。`go build`、`go vet`、`go test ./...`、集成包无库编译与 golangci-lint 通过。
+**本轮说明**：代码走查收尾两项修复：1）补上设计 §5 表格遗漏的 Oracle 模式 `FOR SHARE` → `FOR UPDATE` 退化改写（`clause.Locking` 构建器，README 同步标注锁语义变化）；2）MySQL 集成测试按 G22 内容要点扩齐：关联创建（belongs-to/has-many/many2many + Preload）、`datetime(3)/(6)` 精度往返（含 ParseTime 的 time.Time 读取）、`TIME(3)` 档案 5/8 小数差异（同一租户双连接对比，服务端 `TIME_FORMAT` 佐证存储小数）、并发读写、AutoMigrate 增量加列。此前的 M2 无库交付与 G22/G39 待真实验收状态不变。`go build`、`go vet`、`go test ./...`、集成包无库编译与 golangci-lint 通过。
 
 **维护规则**：
 
@@ -81,7 +81,7 @@
 | G30 | Oracle 模式入口 | 在 G11 的模式解析上接入 Oracle 行为；复用 SessionVariable，不新增 PinnedMode；启用 G13 的 Oracle 产品版本查询及最终模式 NowFunc | G11, G12, G13, G14 | 单测/协议模拟：显式 oracle、auto→oracle、读取错误直接返回；G39 真实验收 | ✅ |
 | G31 | QuoteTo(Oracle) | 双引号 + 未加引号标识符大写化（R2）；区分显式大小写名称，覆盖结果列到模型字段的映射 | G30 | 单测：大小写/转义/扫描；G39 真实大小写验收 | ✅ |
 | G32 | DataTypeOf(Oracle) | Int64→NUMBER(19,0)、Uint64→NUMBER(20,0)；其余 NUMBER/VARCHAR2/CLOB/RAW/BLOB/TIMESTAMP；Object/Array 必须显式 SQL 类型 tag、服务器预处理；限定带时区 Scanner 路径（design.md §5.1/5.2） | G30 | 单测：映射、int64/uint64 极值、复杂类型推断负例与 tag 正例 | ✅ |
-| G33 | LIMIT 改写 | `ClauseBuilders["LIMIT"]` → `OFFSET n ROWS FETCH FIRST m ROWS ONLY` | G30 | DryRun 快照 | ✅ |
+| G33 | LIMIT/FOR 改写 | `ClauseBuilders["LIMIT"]` → `OFFSET n ROWS FETCH FIRST m ROWS ONLY`；`ClauseBuilders["FOR"]` 将 `FOR SHARE` 退化为 `FOR UPDATE`（Oracle 无共享锁读，README 标注语义变化） | G30 | DryRun 快照 | ✅ |
 | G34 | Oracle Create 与批量插入 | 替换 gorm:create，保留事务/hook/关联回调；整句构建 INSERT/INSERT ALL；default tag 零值与显式 NULL 按 GORM 输入形式区分；按相邻相同列集合批量，必要时逐条执行；为 G35/G36 保留逐行冲突目标与主键上下文（design.md §5.3） | G30, G31, G32 | 完整 SQL 快照无重复前缀；结构体默认值、map nil/NULL 表达式、不同列集合/输入顺序与执行错误用例；生成主键路径接 G36 | ✅ |
 | G35 | MERGE upsert 与主键分流 | 校验有效匹配列和唯一约束；UpdateAll 排除 ON 列，显式修改 ON 列拒绝，DoNothing 无更新分支；主键已提供/预分配时 MERGE；单列自动生成主键缺省且目标仅为主键时交 G36 INSERT RETURNING，不按子句来源判断；非主键目标且需生成回填时拒绝；当前回调批量先校验再写入，显式赋值引用行未提供的列同样在 DML 前拒绝（design.md §5.3、R14） | G34 | SQL 快照与 G39 集成：插入/更新/DoNothing、关联自动 ON CONFLICT、Save(slice) 与混合主键分流；不支持条件/ON 列更新及非主键生成请求在对应回调 DML 前拒绝；竞争错误不重试 | ✅ |
 | G36 | 生成主键与基础 RETURNING | IDENTITY 候选门槛 4.2.1 待真实验收、未知/低版本 DDL 前拒绝；单行 INSERT RETURNING INTO + sql.Out 回填，批量逐条回填；接 G35 主键目标分流，关联 ID 在外键/中间表写入前回填；序列 seq.NEXTVAL 预分配、autoIncrement:false；OracleMigrator 序列扩展（design.md §6） | G13, G32, G34, G35 | 模拟：不调用 LastInsertId、不重放；集成：IDENTITY/序列/显式主键、混合 ID、新建各类关联及 FullSaveAssociations、Save(slice)、外键/中间表引用、默认事务回滚与关闭事务后的错误 | ✅ |
