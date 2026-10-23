@@ -106,26 +106,26 @@ CI 若依赖精确退出码应运行编译后的二进制。
 
 ## 2026-10-23 实测结果
 
-基准：OceanBase 4.4.2.2、`go-oceanbase v0.1.1`、GORM v1.31.2、
-Go 1.27.2、Windows amd64。主矩阵 run ID：`2d366acec44f`，补充矩阵：`99783ab2c330`。
+基准：OceanBase 4.4.2.2、`go-oceanbase v0.1.2`、GORM v1.31.2、
+Go 1.27.2、Windows amd64。主矩阵 run ID：`c211424018de`，补充矩阵：`b86cfeb78b1f`。
 
 | 目标 | MySQL 档案 | pass | fail | skip | not_applicable |
 | --- | --- | --- | --- | --- | --- |
 | mysql | 8 | 87 | 0 | 0 | 19 |
 | mysql_prepared | 8 | 87 | 0 | 0 | 19 |
-| oracle | — | 83 | 7 | 0 | 16 |
-| oracle_prepared | — | 79 | 11 | 0 | 16 |
-| **主矩阵合计** | | **336** | **18** | **0** | **70** |
+| oracle | — | 86 | 4 | 0 | 16 |
+| oracle_prepared | — | 86 | 4 | 0 | 16 |
+| **主矩阵合计** | | **346** | **8** | **0** | **70** |
 | mysql_profile5（补充矩阵） | 5 | 87 | 0 | 0 | 19 |
 | mysql_prepared_profile5（补充矩阵） | 5 | 87 | 0 | 0 | 19 |
 
 补充矩阵也运行全部 106 个用例，验证档案 5 的 TIME 小数截断、负时长、长时长及
-DATE/DATETIME/TIMESTAMP 读回。18 个主矩阵失败均保留，没有转成 skip 或忽略。
+DATE/DATETIME/TIMESTAMP 读回。8 个主矩阵失败均保留，没有转成 skip 或忽略。
 
 本轮修复 MySQL 空列批量 INSERT 丢行，并纠正验收程序的 TIME 类型、INTERVAL 正号比较及
 预处理缓存生命周期。最终矩阵无清理错误；初轮句柄耗尽遗留的两张自有表已按报告名称清理，
 独立对象清单核对无剩余。原有固定表名 `tests/integration` 本轮只做编译检查；
 表中通过数来自随机对象的独立验收程序，旧集成套件和单独驱动复现不计入该统计。
 
-本地完整 JSON 结果保存在忽略目录 `.cache/`：`live-final-20261023.json`、
-`live-profile5-20261023.json`，均不含连接凭据。
+本地完整 JSON 结果保存在忽略目录 `.cache/`：`live-v012-20261023.json`、
+`live-profile5-v012-20261023.json`，均不含连接凭据。

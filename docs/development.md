@@ -4,7 +4,7 @@
 
 **当前进度：已完成 22 / 32，进行中 7，未开始 3，受阻 0。下一项：复验 Oracle 失败项目，并补齐 G22/G39 剩余集成范围。**
 
-**本轮说明**：独立验收程序 `cmd/gorm-obtest` 已在 OceanBase 4.4.2.2 执行四目标主矩阵：336 pass / 18 fail / 0 skip / 70 not_applicable；补充 MySQL 档案 5 两目标：174 pass / 0 fail / 0 skip / 38 not_applicable。MySQL 全部适用用例通过；Oracle 尚未全部通过，见[实测说明](../tests/acceptance/README.md)。已修复 MySQL 全默认值批量写入丢行及验收程序问题，并清理本次自建对象。固定表名的旧 integration 套件未在该 schema 执行，G22/G39 保持部分完成，不据单一服务器版本扩大兼容声明。
+**本轮说明**：依赖已升级为 `go-oceanbase v0.1.2`；独立验收程序 `cmd/gorm-obtest` 已在 OceanBase 4.4.2.2 执行四目标主矩阵：346 pass / 8 fail / 0 skip / 70 not_applicable；补充 MySQL 档案 5 两目标：174 pass / 0 fail / 0 skip / 38 not_applicable。MySQL 全部适用用例通过；Oracle 尚未全部通过，见[实测说明](../tests/acceptance/README.md)。已修复 MySQL 全默认值批量写入丢行及验收程序问题，并清理本次自建对象。固定表名的旧 integration 套件未在该 schema 执行，G22/G39 保持部分完成，不据单一服务器版本扩大兼容声明。
 
 **维护规则**：
 
@@ -32,7 +32,7 @@
 
 | ID | 任务 | 内容要点 | 依赖 | 验收 | 状态 |
 | --- | --- | --- | --- | --- | --- |
-| G01 | 模块初始化 | `go.mod`（module github.com/cocosip/gorm-oceanbase，go 1.26）；固定开发基准 `gorm.io/gorm@v1.31.2`（当前最新）、`github.com/cocosip/go-oceanbase@v0.1.1`（远程模块，不用 replace）；更低 GORM 版本按矩阵验收后声明 | — | `go build ./...` 通过 | ✅ |
+| G01 | 模块初始化 | `go.mod`（module github.com/cocosip/gorm-oceanbase，go 1.26）；固定开发基准 `gorm.io/gorm@v1.31.2`（当前最新）、`github.com/cocosip/go-oceanbase@v0.1.2`（远程模块，不用 replace）；更低 GORM 版本按矩阵验收后声明 | — | `go build ./...` 通过 | ✅ |
 | G02 | README 骨架 | 项目定位、快速上手（对齐 design.md §3 入口示例）、文档索引 | G01 | 评审通过 | ✅ |
 | G03 | CI 骨架 | GitHub Actions：build + vet + 无库 test + golangci-lint（复用现有 .golangci.yml）；集成包建立后补 `go test -tags=integration ./tests/integration -run '^$'` 编译检查 | G01 | 骨架阶段常规检查通过；G22/G39 建立后集成编译通过，不将 skip 记作真实验收 | ✅ |
 

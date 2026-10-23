@@ -4,7 +4,7 @@
 
 - 模块路径：`github.com/cocosip/gorm-oceanbase`，包名 `oceanbase`
 - 开发基准：`gorm.io/gorm` v1.31.2（当前最新版本）；v1.25+ 为兼容目标，需完成版本矩阵测试后才能声明支持
-- 驱动基线：`github.com/cocosip/go-oceanbase` **v0.1.1**
+- 驱动基线：`github.com/cocosip/go-oceanbase` **v0.1.2**
 - Go 版本：1.26（随底层驱动要求）
 
 ---
