@@ -4,7 +4,7 @@
 [go-oceanbase](https://github.com/cocosip/go-oceanbase)（`database/sql` 驱动），一个 `Dialector` 通过 DSN 或配置选择模式。
 
 > 2026-10-23 已实测 OceanBase 4.4.2.2：MySQL 档案 5/8 的普通和预处理目标均通过全部适用用例；
-> Oracle 仍有 [基础驱动问题及服务端限制](tests/acceptance/driver-issues.md)，详见 [实测统计](tests/acceptance/README.md#2026-10-23-实测结果)。
+> Oracle 尚未全部通过，详见 [实测统计](tests/acceptance/README.md#2026-10-23-实测结果)。
 > 支持范围以 [docs/development.md](docs/development.md) 的验收状态为准，未验收项不声明生产可用。
 
 ## 安装
@@ -118,7 +118,7 @@ Config.Mode（非零） > DSN 显式 mode / DSNConfig 非零 Mode > 默认 MySQL
 
 ## 文档
 
-- [真实租户验收程序](tests/acceptance/README.md)：`cmd/gorm-obtest`，通过配置切换 MySQL/Oracle，覆盖类型、字段元数据、迁移和 GORM 行为；含实测统计及驱动问题复现
+- [真实租户验收程序](tests/acceptance/README.md)：`cmd/gorm-obtest`，通过配置切换 MySQL/Oracle，覆盖类型、字段元数据、迁移和 GORM 行为；含实测统计
 - [设计方案](docs/design.md)：架构、配置、双模式行为、错误翻译与测试策略
 - [开发计划与进度](docs/development.md)：任务分解、依赖与验收状态
 

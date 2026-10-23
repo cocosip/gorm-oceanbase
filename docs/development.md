@@ -2,9 +2,9 @@
 
 本文档基于 [design.md](design.md) 定义开发任务，直接通过各任务的状态列表示当前进度。
 
-**当前进度：已完成 22 / 32，进行中 7，未开始 3，受阻 0。下一项：基础驱动修复后复验 G39，并补齐 G22/G39 剩余集成范围。**
+**当前进度：已完成 22 / 32，进行中 7，未开始 3，受阻 0。下一项：复验 Oracle 失败项目，并补齐 G22/G39 剩余集成范围。**
 
-**本轮说明**：独立验收程序 `cmd/gorm-obtest` 已在 OceanBase 4.4.2.2 执行四目标主矩阵：336 pass / 18 fail / 0 skip / 70 not_applicable；补充 MySQL 档案 5 两目标：174 pass / 0 fail / 0 skip / 38 not_applicable。MySQL 全部适用用例通过；Oracle 驱动问题与服务端限制仍保留失败，见[实测说明](../tests/acceptance/README.md)和[驱动交接](../tests/acceptance/driver-issues.md)。已修复 MySQL 全默认值批量写入丢行及验收程序问题，并清理本次自建对象。固定表名的旧 integration 套件未在该 schema 执行，G22/G39 保持部分完成，不据单一服务器版本扩大兼容声明。
+**本轮说明**：独立验收程序 `cmd/gorm-obtest` 已在 OceanBase 4.4.2.2 执行四目标主矩阵：336 pass / 18 fail / 0 skip / 70 not_applicable；补充 MySQL 档案 5 两目标：174 pass / 0 fail / 0 skip / 38 not_applicable。MySQL 全部适用用例通过；Oracle 尚未全部通过，见[实测说明](../tests/acceptance/README.md)。已修复 MySQL 全默认值批量写入丢行及验收程序问题，并清理本次自建对象。固定表名的旧 integration 套件未在该 schema 执行，G22/G39 保持部分完成，不据单一服务器版本扩大兼容声明。
 
 **维护规则**：
 

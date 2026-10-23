@@ -5,7 +5,7 @@
 继续保留；此命令提供类型矩阵、字段元数据、独立对象清理和可保存的 JSON 报告。
 
 2026-10-23 已执行 OceanBase **4.4.2.2** 双模式真实验收；MySQL 本次全部适用用例通过，
-Oracle 仍有驱动问题和服务端限制，详见下方实测结果及[驱动交接](driver-issues.md)。
+Oracle 尚未全部通过，详见下方实测结果。
 
 ## 离线查看和检查
 
@@ -120,16 +120,12 @@ Go 1.27.2、Windows amd64。主矩阵 run ID：`2d366acec44f`，补充矩阵：`
 | mysql_prepared_profile5（补充矩阵） | 5 | 87 | 0 | 0 | 19 |
 
 补充矩阵也运行全部 106 个用例，验证档案 5 的 TIME 小数截断、负时长、长时长及
-DATE/DATETIME/TIMESTAMP 读回。18 个主矩阵失败均保留，没有转成 skip 或忽略：
-其中驱动问题 10 项（BLOB 6 项、独立 PREPARE RETURNING 4 项），同租户 Connector/J
-对照确认的具体服务端限制 8 项（浮点极值 4 项、NCLOB 2 项、集合列 2 项）。
-完整错误与独立复现见[驱动交接](driver-issues.md)。
+DATE/DATETIME/TIMESTAMP 读回。18 个主矩阵失败均保留，没有转成 skip 或忽略。
 
 本轮修复 MySQL 空列批量 INSERT 丢行，并纠正验收程序的 TIME 类型、INTERVAL 正号比较及
 预处理缓存生命周期。最终矩阵无清理错误；初轮句柄耗尽遗留的两张自有表已按报告名称清理，
 独立对象清单核对无剩余。原有固定表名 `tests/integration` 本轮只做编译检查；
 表中通过数来自随机对象的独立验收程序，旧集成套件和单独驱动复现不计入该统计。
 
-本地完整 JSON/诊断结果保存在忽略目录 `.cache/`：`live-final-20261023.json`、
-`live-profile5-20261023.json`、`driver-issues-20261023.log`、
-`java-comparison.log`、`live-cleanup-20261023.log`，均不含连接凭据。
+本地完整 JSON 结果保存在忽略目录 `.cache/`：`live-final-20261023.json`、
+`live-profile5-20261023.json`，均不含连接凭据。
