@@ -9,6 +9,8 @@ import (
 	"io"
 	"strings"
 	"sync"
+
+	ob "github.com/cocosip/go-oceanbase"
 )
 
 // fakeServer is the in-process server stand-in used by unit tests. It records
@@ -23,6 +25,7 @@ type fakeServer struct {
 	outSeed    int64
 	outNext    int64
 	pingErr    error
+	execResult driver.Result
 }
 
 type fakeReply struct {
@@ -247,9 +250,13 @@ func (c *fakeConn) ExecContext(_ context.Context, query string, _ []driver.Named
 	c.server.mu.Lock()
 	c.server.execs = append(c.server.execs, query)
 	execErr := c.server.execErrors[query]
+	result := c.server.execResult
 	c.server.mu.Unlock()
 	if execErr != nil {
 		return nil, execErr
+	}
+	if result != nil {
+		return result, nil
 	}
 	return fakeResult{}, nil
 }
@@ -257,7 +264,7 @@ func (c *fakeConn) ExecContext(_ context.Context, query string, _ []driver.Named
 type fakeResult struct{}
 
 func (fakeResult) LastInsertId() (int64, error) {
-	return 0, errors.New("fakeResult: LastInsertId is not supported")
+	return 0, ob.ErrUnsupported
 }
 func (fakeResult) RowsAffected() (int64, error) { return 1, nil }
 

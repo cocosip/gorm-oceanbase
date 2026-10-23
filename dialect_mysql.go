@@ -1,10 +1,14 @@
 package oceanbase
 
 import (
+	"context"
+	"database/sql"
+	"errors"
 	"fmt"
 	"math"
 	"strings"
 
+	ob "github.com/cocosip/go-oceanbase"
 	"gorm.io/gorm"
 	"gorm.io/gorm/callbacks"
 	"gorm.io/gorm/clause"
@@ -30,12 +34,42 @@ var mysqlCreateClauses = []string{"INSERT", "VALUES", "ON CONFLICT"}
 // registerMySQLCallbacks installs the default callback chain extended with
 // MySQL-only LIMIT support on update and delete.
 func registerMySQLCallbacks(db *gorm.DB) {
-	callbacks.RegisterDefaultCallbacks(db, &callbacks.Config{
+	config := &callbacks.Config{
 		CreateClauses: mysqlCreateClauses,
 		QueryClauses:  []string{"SELECT", "FROM", clauseWhere, "GROUP BY", clauseOrderBy, clauseLimit, "FOR"},
 		UpdateClauses: []string{"UPDATE", "SET", clauseWhere, clauseOrderBy, clauseLimit},
 		DeleteClauses: []string{"DELETE", "FROM", clauseWhere, clauseOrderBy, clauseLimit},
+	}
+	callbacks.RegisterDefaultCallbacks(db, config)
+	create := callbacks.Create(config)
+	_ = db.Callback().Create().Replace("gorm:create", func(tx *gorm.DB) {
+		pool := tx.Statement.ConnPool
+		tx.Statement.ConnPool = mysqlCreatePool{ConnPool: pool}
+		defer func() { tx.Statement.ConnPool = pool }()
+		create(tx)
 	})
+}
+
+// GORM expects zero with no error when an INSERT has no generated ID.
+// Adapt only that result method; execution errors and ID overflows propagate.
+type mysqlCreatePool struct{ gorm.ConnPool }
+
+func (p mysqlCreatePool) ExecContext(ctx context.Context, query string, args ...interface{}) (sql.Result, error) {
+	result, err := p.ConnPool.ExecContext(ctx, query, args...)
+	if err != nil {
+		return nil, err
+	}
+	return mysqlCreateResult{Result: result}, nil
+}
+
+type mysqlCreateResult struct{ sql.Result }
+
+func (r mysqlCreateResult) LastInsertId() (int64, error) {
+	id, err := r.Result.LastInsertId()
+	if errors.Is(err, ob.ErrUnsupported) {
+		return 0, nil
+	}
+	return id, err
 }
 
 // mysqlClauseBuilders returns the MySQL clause rewrites.
@@ -224,7 +258,7 @@ func (d *Dialector) mysqlStringType(field *schema.Field) string {
 		if d.DefaultStringSize > 0 {
 			size = int(d.DefaultStringSize)
 		} else {
-			hasIndex := field.TagSettings["INDEX"] != "" || field.TagSettings["UNIQUE"] != ""
+			hasIndex := field.TagSettings["INDEX"] != "" || field.TagSettings["UNIQUE"] != "" || field.TagSettings["UNIQUEINDEX"] != ""
 			// TEXT, GEOMETRY and JSON columns cannot carry a default value.
 			if field.PrimaryKey || field.HasDefaultValue || hasIndex {
 				size = 191 // utf8mb4

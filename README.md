@@ -28,13 +28,15 @@ db, err := gorm.Open(oceanbase.Open("oceanbase://user:pass@127.0.0.1:2881/db?mod
 结构化配置（与 DSN 二选一）：
 
 ```go
-cfg, err := oceanbase.ParseDSN("oceanbase://user:pass@127.0.0.1:2881/db")
+import ob "github.com/cocosip/go-oceanbase"
+
+cfg, err := ob.ParseDSN("oceanbase://user:pass@127.0.0.1:2881/db")
 if err != nil {
     return err
 }
 db, err := gorm.Open(oceanbase.New(oceanbase.Config{
     DSNConfig: &cfg,
-    Mode:      oceanbase.ModeOracle,
+    Mode:      ob.ModeOracle,
 }), &gorm.Config{})
 ```
 
@@ -68,7 +70,7 @@ Config.Mode（非零） > DSN 显式 mode / DSNConfig 非零 Mode > 默认 MySQL
 
 对齐 `gorm.io/driver/mysql` v1.6 的行为（MySQL 模式）：
 
-- 普通 `string` 字段未指定 `size` 时为 `longtext`；主键、带默认值或带 `INDEX`/`UNIQUE` tag 的字段为
+- 普通 `string` 字段未指定 `size` 时为 `longtext`；主键、带默认值或带 `INDEX`/`UNIQUE`/`UNIQUEINDEX` tag 的字段为
   `varchar(191)`（utf8mb4 索引长度）；设置 `Config.DefaultStringSize` 后统一使用该长度。
 - 长度 65536 至 2²⁴ 使用 `mediumtext`，更长为 `longtext`，其余正长度使用 `varchar(n)`。
 - `datetime` 默认精度 3（毫秒），可用 `DefaultDatetimePrecision` 调整或 `DisableDatetimePrecision` 关闭。
@@ -77,7 +79,8 @@ Config.Mode（非零） > DSN 显式 mode / DSNConfig 非零 Mode > 默认 MySQL
 ## Oracle 兼容模式
 
 - **标识符**：所有未加引号的标识符按大写处理（对齐 OB Oracle 折叠规则）；`gorm:"column:\"Foo\""`
-  等自带引号的显式大小写名称原样保留。查询结果列按大写返回，依赖 GORM 的命名策略回退映射到模型字段。
+  等自带引号的显式大小写名称原样保留。查询时将物理列名映射回模型 DBName，支持自定义列名、显式大小写和关联查询；调用者的 `MapColumns` 优先。
+  `Raw(...).Scan(...)` 未指定模型时，请通过 SQL 别名或 `MapColumns` 指定自定义列映射。
 - **锁**：Oracle 没有 `FOR SHARE` 共享锁读语法，`clause.Locking{Strength: "SHARE"}` 会退化为
   `FOR UPDATE`（锁语义从共享变为排他）；`UPDATE` 强度与 `NOWAIT`/`SKIP LOCKED` 选项原样输出。
 - **类型映射**：`Bool→NUMBER(1)`；`Int/Uint→NUMBER(p,0)`（int64→19、uint64→20）；`Float→NUMBER(p,s)/
@@ -90,7 +93,8 @@ Config.Mode（非零） > DSN 显式 mode / DSNConfig 非零 Mode > 默认 MySQL
   配合事务内 `SELECT my_seq.NEXTVAL FROM dual` 取号）。插入省略零值主键，经 `INSERT ... RETURNING ...
   INTO ?` 取回并回填模型；批量逐条获取，绝不推算连续 ID，也不使用 `LastInsertId`。
 - **Upsert（MERGE）**：`clause.OnConflict` 编译为 `MERGE INTO ... USING (SELECT ? ... FROM dual)`。冲突
-  目标取显式 `Columns` 或模型完整主键；`UpdateAll` 排除 ON 列；修改 ON 列、条件形态（`Where`/
+  目标取显式 `Columns` 或模型完整主键；非主键目标执行前查询数据库唯一索引，必须匹配完整唯一键
+  （DryRun 依据模型 `unique`/`uniqueIndex` 声明，无模型时无法证明唯一性则拒绝）；`UpdateAll` 排除 ON 列；修改 ON 列、条件形态（`Where`/
   `TargetWhere`/`OnConstraint`）一律在执行前返回 `ErrUpsertUnsupported`，不会静默丢弃语义。按非主键唯一列
   匹配且仍需生成主键的 upsert 被拒绝（先取号）；按非主键匹配的 MERGE 不回填已有行的主键。
   同一回调的整批先校验后执行；发生唯一冲突按错误翻译返回，不自动重试。

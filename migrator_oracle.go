@@ -21,6 +21,7 @@ const (
 	oracleHasColumnSQL     = "SELECT count(*) FROM all_tab_columns WHERE owner = ? AND table_name = ? AND column_name = ?"
 	oracleGetTablesSQL     = "SELECT table_name FROM all_tables WHERE owner = ?"
 	oracleHasConstraintSQL = "SELECT count(*) FROM all_constraints WHERE owner = ? AND table_name = ? AND constraint_name = ?"
+	oracleHasIndexSQL      = "SELECT count(*) FROM all_indexes WHERE table_owner = ? AND table_name = ? AND index_name = ?"
 
 	oracleColumnTypesSQL = "SELECT column_name, data_default, CASE WHEN nullable = 'Y' THEN 1 ELSE 0 END AS nullable_flag, data_type, char_length, data_precision, data_scale FROM all_tab_columns WHERE owner = ? AND table_name = ? ORDER BY column_id"
 
@@ -44,7 +45,7 @@ type oracleMigrator struct {
 func newOracleMigrator(db *gorm.DB, dialector *Dialector) gorm.Migrator {
 	return &oracleMigrator{
 		Migrator: migrator.Migrator{
-			Config: migrator.Config{DB: db, Dialector: dialector},
+			Config: migrator.Config{DB: db, Dialector: dialector, CreateIndexAfterCreateTable: true},
 		},
 		dialector: dialector,
 	}
@@ -71,7 +72,7 @@ func (m *oracleMigrator) CreateSequence(name string) error {
 // upper case, so the lookup compares the folded name.
 func (m *oracleMigrator) HasSequence(name string) bool {
 	var count int64
-	_ = m.DB.Raw("SELECT count(*) FROM user_sequences WHERE sequence_name = ?", strings.ToUpper(name)).
+	_ = m.DB.Raw("SELECT count(*) FROM user_sequences WHERE sequence_name = ?", oracleIdentifierName(name)).
 		Row().Scan(&count)
 	return count > 0
 }
@@ -86,7 +87,7 @@ func (m *oracleMigrator) CurrentDatabase() (name string) {
 // current schema.
 func (m *oracleMigrator) CurrentSchema(_ *gorm.Statement, table string) (string, string) {
 	if tables := strings.Split(table, "."); len(tables) == 2 {
-		return tables[0], tables[1]
+		return oracleIdentifierName(tables[0]), tables[1]
 	}
 	return m.CurrentDatabase(), table
 }
@@ -96,7 +97,7 @@ func (m *oracleMigrator) HasTable(value interface{}) bool {
 	var count int64
 	_ = m.RunWithValue(value, func(stmt *gorm.Statement) error {
 		schemaName, tableName := m.CurrentSchema(stmt, stmt.Table)
-		return m.DB.Raw(oracleHasTableSQL, schemaName, strings.ToUpper(tableName)).Row().Scan(&count)
+		return m.DB.Raw(oracleHasTableSQL, schemaName, oracleIdentifierName(tableName)).Row().Scan(&count)
 	})
 	return count > 0
 }
@@ -112,7 +113,7 @@ func (m *oracleMigrator) HasColumn(value interface{}, field string) bool {
 				name = f.DBName
 			}
 		}
-		return m.DB.Raw(oracleHasColumnSQL, schemaName, strings.ToUpper(tableName), strings.ToUpper(name)).Row().Scan(&count)
+		return m.DB.Raw(oracleHasColumnSQL, schemaName, oracleIdentifierName(tableName), oracleIdentifierName(name)).Row().Scan(&count)
 	})
 	return count > 0
 }
@@ -132,7 +133,7 @@ func (m *oracleMigrator) TableType(value interface{}) (gorm.TableType, error) {
 			"SELECT t.owner, t.table_name, 'BASE TABLE', c.comments FROM all_tables t"+
 				" LEFT JOIN all_tab_comments c ON c.owner = t.owner AND c.table_name = t.table_name"+
 				" WHERE t.owner = ? AND t.table_name = ?",
-			schemaName, strings.ToUpper(tableName),
+			schemaName, oracleIdentifierName(tableName),
 		).Row().Scan(&table.SchemaValue, &table.NameValue, &table.TypeValue, &table.CommentValue)
 	})
 	return table, err
@@ -143,7 +144,10 @@ func (m *oracleMigrator) HasConstraint(value interface{}, name string) bool {
 	var count int64
 	_ = m.RunWithValue(value, func(stmt *gorm.Statement) error {
 		schemaName, tableName := m.CurrentSchema(stmt, stmt.Table)
-		return m.DB.Raw(oracleHasConstraintSQL, schemaName, strings.ToUpper(tableName), strings.ToUpper(name)).Row().Scan(&count)
+		if constraint, _ := m.GuessConstraintInterfaceAndTable(stmt, name); constraint != nil {
+			name = constraint.GetName()
+		}
+		return m.DB.Raw(oracleHasConstraintSQL, schemaName, oracleIdentifierName(tableName), oracleIdentifierName(name)).Row().Scan(&count)
 	})
 	return count > 0
 }
@@ -154,7 +158,7 @@ func (m *oracleMigrator) ColumnTypes(value interface{}) ([]gorm.ColumnType, erro
 	columnTypes := make([]gorm.ColumnType, 0)
 	err := m.RunWithValue(value, func(stmt *gorm.Statement) error {
 		schemaName, tableName := m.CurrentSchema(stmt, stmt.Table)
-		rows, err := m.DB.Table(tableName).Raw(oracleColumnTypesSQL, schemaName, strings.ToUpper(tableName)).Rows()
+		rows, err := m.DB.Table(tableName).Raw(oracleColumnTypesSQL, schemaName, oracleIdentifierName(tableName)).Rows()
 		if err != nil {
 			return err
 		}
@@ -182,8 +186,18 @@ func (m *oracleMigrator) ColumnTypes(value interface{}) ([]gorm.ColumnType, erro
 				column.AutoIncrementValue = sql.NullBool{Bool: true, Valid: true}
 			}
 			column.LengthValue = charLength
+			if !strings.Contains(column.DataTypeValue.String, "CHAR") && column.DataTypeValue.String != "RAW" {
+				column.LengthValue = sql.NullInt64{}
+			}
 			column.DecimalSizeValue = dataPrecision
 			column.ScaleValue = dataScale
+			if field := oracleModelField(stmt.Schema, column.NameValue.String); field != nil {
+				column.NameValue.String = field.DBName
+			}
+			value := column.DefaultValueValue.String
+			if len(value) >= 2 && value[0] == '\'' && value[len(value)-1] == '\'' {
+				column.DefaultValueValue.String = strings.ReplaceAll(value[1:len(value)-1], "''", "'")
+			}
 
 			columnTypes = append(columnTypes, column)
 		}
@@ -206,7 +220,7 @@ func (m *oracleMigrator) GetIndexes(value interface{}) ([]gorm.Index, error) {
 	err := m.RunWithValue(value, func(stmt *gorm.Statement) error {
 		schemaName, tableName := m.CurrentSchema(stmt, stmt.Table)
 		result := make([]*oracleIndex, 0)
-		if scanErr := m.DB.Table(tableName).Raw(oracleIndexSQL, schemaName, strings.ToUpper(tableName)).Scan(&result).Error; scanErr != nil {
+		if scanErr := m.DB.Table(tableName).Raw(oracleIndexSQL, schemaName, oracleIdentifierName(tableName)).Scan(&result).Error; scanErr != nil {
 			return scanErr
 		}
 
@@ -275,10 +289,56 @@ func (m *oracleMigrator) AddColumn(value interface{}, name string) error {
 // AlterColumn refuses turning a column into auto-increment on unverified
 // versions.
 func (m *oracleMigrator) AlterColumn(value interface{}, field string) error {
-	if err := m.checkIdentityDDL([]interface{}{value}); err != nil {
-		return err
+	return m.RunWithValue(value, func(stmt *gorm.Statement) error {
+		if stmt.Schema != nil {
+			if f := stmt.Schema.LookUpField(field); f != nil {
+				return m.DB.Exec("ALTER TABLE ? MODIFY (? ?)", m.CurrentTable(stmt), clause.Column{Name: f.DBName}, m.Migrator.FullDataTypeOf(f)).Error
+			}
+		}
+		return fmt.Errorf("failed to look up field with name: %s", field)
+	})
+}
+
+// MigrateColumn compares inferred integer precision rather than Go's zero tag value.
+func (m *oracleMigrator) MigrateColumn(value interface{}, field *schema.Field, columnType gorm.ColumnType) error {
+	copyField := *field
+	if field.DataType == schema.Int || field.DataType == schema.Uint {
+		copyField.Precision = oracleNumberPrecision(field)
 	}
-	return m.Migrator.AlterColumn(value, field)
+	return m.Migrator.MigrateColumn(value, &copyField, columnType)
+}
+
+// HasIndex uses the Oracle dictionary and accepts model field names like GORM.
+func (m *oracleMigrator) HasIndex(value interface{}, name string) bool {
+	var count int64
+	_ = m.RunWithValue(value, func(stmt *gorm.Statement) error {
+		if stmt.Schema != nil {
+			if idx := stmt.Schema.LookIndex(name); idx != nil {
+				name = idx.Name
+			}
+		}
+		owner, table := m.CurrentSchema(stmt, stmt.Table)
+		return m.DB.Raw(oracleHasIndexSQL, owner, oracleIdentifierName(table), oracleIdentifierName(name)).Row().Scan(&count)
+	})
+	return count > 0
+}
+
+// DropIndex and RenameIndex use schema-level Oracle index names.
+func (m *oracleMigrator) DropIndex(value interface{}, name string) error {
+	return m.RunWithValue(value, func(stmt *gorm.Statement) error {
+		if stmt.Schema != nil {
+			if idx := stmt.Schema.LookIndex(name); idx != nil {
+				name = idx.Name
+			}
+		}
+		return m.DB.Exec("DROP INDEX ?", clause.Column{Name: name}).Error
+	})
+}
+
+func (m *oracleMigrator) RenameIndex(value interface{}, oldName, newName string) error {
+	return m.RunWithValue(value, func(_ *gorm.Statement) error {
+		return m.DB.Exec("ALTER INDEX ? RENAME TO ?", clause.Column{Name: oldName}, clause.Column{Name: newName}).Error
+	})
 }
 
 // checkIdentityDDL walks the models and refuses any IDENTITY-producing DDL

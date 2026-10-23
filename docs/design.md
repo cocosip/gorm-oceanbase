@@ -173,7 +173,7 @@ Config.Mode（非零） > 输入配置的模式 > 默认 MySQL
 | Time | `datetime(p)`（默认精度 3，可配） |
 | Bytes | `varbinary(n)` / `mediumblob` / `longblob` |
 
-字符串规则按 mysql v1.6.0：优先使用字段 Size；未指定时使用非零 `DefaultStringSize`。二者均未指定时，主键、带默认值或 `INDEX`/`UNIQUE` tag 的字段取 191，其余取 `longtext`。确定长度后，65536 至 2²⁴（含）使用 `mediumtext`，超过 2²⁴ 使用 `longtext`，其余正长度使用 `varchar(n)`；显式 SQL 类型 tag 透传。不把所有未标长度的字符串统一限制为 191。
+字符串规则按 mysql v1.6.0：优先使用字段 Size；未指定时使用非零 `DefaultStringSize`。二者均未指定时，主键、带默认值或 `INDEX`/`UNIQUE`/`UNIQUEINDEX` tag 的字段取 191，其余取 `longtext`。确定长度后，65536 至 2²⁴（含）使用 `mediumtext`，超过 2²⁴ 使用 `longtext`，其余正长度使用 `varchar(n)`；显式 SQL 类型 tag 透传。不把所有未标长度的字符串统一限制为 191。
 
 **Oracle 模式**：
 

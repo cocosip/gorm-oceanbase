@@ -360,8 +360,8 @@ func TestOracleComplexTypeNeedsTag(t *testing.T) {
 // database-default marker path.
 type oracleArticle struct {
 	ID     uint
-	Title  string
-	Rating int `gorm:"default:(50)"`
+	Title  string `gorm:"uniqueIndex"`
+	Rating int    `gorm:"default:(50)"`
 }
 
 // oracleTaggedArticle uses a literal default tag, which GORM binds as a value.
@@ -1065,15 +1065,15 @@ func TestOracleColumnTypes(t *testing.T) {
 	}
 
 	id := columnTypes[0]
-	if id.Name() != "ID" {
-		t.Fatalf("first column = %s, want ID", id.Name())
+	if id.Name() != "id" {
+		t.Fatalf("first column = %s, want id", id.Name())
 	}
 	if auto, ok := id.AutoIncrement(); !ok || !auto {
 		t.Fatalf("ID auto-increment = %v, %v; want true", auto, ok)
 	}
 	title := columnTypes[1]
-	if title.Name() != "TITLE" {
-		t.Fatalf("second column = %s, want TITLE", title.Name())
+	if title.Name() != "title" {
+		t.Fatalf("second column = %s, want title", title.Name())
 	}
 	if nullable, ok := title.Nullable(); !ok || !nullable {
 		t.Fatalf("TITLE nullable = %v, %v; want true", nullable, ok)

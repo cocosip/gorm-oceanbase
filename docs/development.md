@@ -4,7 +4,7 @@
 
 **当前进度：已完成 22 / 32，进行中 7，未开始 3，受阻 0。下一项：G22/G39 真实租户验收（需数据库联调，按约定本轮不做）。**
 
-**本轮说明**：代码走查收尾两项修复：1）补上设计 §5 表格遗漏的 Oracle 模式 `FOR SHARE` → `FOR UPDATE` 退化改写（`clause.Locking` 构建器，README 同步标注锁语义变化）；2）MySQL 集成测试按 G22 内容要点扩齐：关联创建（belongs-to/has-many/many2many + Preload）、`datetime(3)/(6)` 精度往返（含 ParseTime 的 time.Time 读取）、`TIME(3)` 档案 5/8 小数差异（同一租户双连接对比，服务端 `TIME_FORMAT` 佐证存储小数）、并发读写、AutoMigrate 增量加列。此前的 M2 无库交付与 G22/G39 待真实验收状态不变。`go build`、`go vet`、`go test ./...`、集成包无库编译与 golangci-lint 通过。
+**本轮说明**：修复双模式走查的 13 项问题：MySQL 无生成 ID 的写入结果、删表后的外键检查恢复和 uniqueIndex 字符串推断；Oracle 迁移列名匹配、索引/改列语法、自定义列扫描、默认值批量写入与主键回填、空 map 输入、MERGE 唯一键和生成主键校验、UpdateAll 的 ON 列处理及 precision:0；修正结构化配置示例。回归测试使用模拟数据库，真实租户 G22/G39 验收仍待执行。
 
 **维护规则**：
 

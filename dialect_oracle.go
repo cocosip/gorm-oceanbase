@@ -20,6 +20,8 @@ func registerOracleCallbacks(db *gorm.DB) {
 	callbacks.RegisterDefaultCallbacks(db, &callbacks.Config{})
 	// gorm:create is always present right after RegisterDefaultCallbacks.
 	_ = db.Callback().Create().Replace("gorm:create", createOracle)
+	_ = db.Callback().Query().Before("gorm:query").Register("oceanbase:map_columns", mapOracleColumns)
+	_ = db.Callback().Row().Before("gorm:row").Register("oceanbase:map_columns", mapOracleColumns)
 }
 
 // oracleDefaultMarker is the DefaultValueOf marker for Oracle mode. The Oracle
@@ -82,31 +84,17 @@ func hasOracleOnConflict(stmt *gorm.Statement) bool {
 // per row, so the generated keys are fetched and written back (design.md §6).
 func buildOraclePlainInserts(db *gorm.DB) []oracleInsertSQL {
 	stmt := db.Statement
-	values := callbacks.ConvertToCreateValues(stmt)
+	values := oracleCreateValues(db)
 	if db.Error != nil {
 		return nil
 	}
 	groups := groupOracleInsertRows(values)
-	if len(groups) == 0 {
-		// Every column of the record falls back to a database default; render
-		// the single-column DEFAULT form instead of nothing.
-		if field := firstOracleDefaultField(stmt); field != nil {
-			groups = []oracleInsertGroup{{
-				columns:    []clause.Column{{Name: field.DBName}},
-				rows:       [][]interface{}{{oracleDefaultMarker{}}},
-				sourceRows: []int{0},
-			}}
-		} else {
-			_ = db.AddError(gorm.ErrInvalidData)
-			return nil
-		}
-	}
 
 	pkField := oracleGeneratedPKField(stmt)
 	ins := oracleInsertClause(stmt)
 	built := make([]oracleInsertSQL, 0, len(groups))
 	for _, g := range groups {
-		if pkField != nil && !oracleRowHasColumn(g.columns, pkField.DBName) {
+		if pkField != nil && oracleNeedsGeneratedPK(g.columns, g.rows[0], pkField.DBName) {
 			// Generated keys are fetched row by row; never batched.
 			for i, rowValues := range g.rows {
 				built = append(built, buildOracleInsertReturning(stmt, ins, pkField, g.columns, rowValues, g.sourceRows[i]))
@@ -175,8 +163,9 @@ type oracleUpsertRow struct {
 // is delivered by the Oracle primary key task (design.md §5.3, R14).
 func buildOracleUpserts(db *gorm.DB) []oracleInsertSQL {
 	stmt := db.Statement
+	original, _ := stmt.Clauses["ON CONFLICT"].Expression.(clause.OnConflict)
 	// ConvertToCreateValues also expands UpdateAll into DoUpdates assignments.
-	values := callbacks.ConvertToCreateValues(stmt)
+	values := oracleCreateValues(db)
 	if db.Error != nil {
 		return nil
 	}
@@ -192,7 +181,12 @@ func buildOracleUpserts(db *gorm.DB) []oracleInsertSQL {
 		_ = db.AddError(err)
 		return nil
 	}
-	if err := validateOracleOnConflict(oc, target); err != nil {
+	if err := validateOracleOnConflict(original, target); err != nil {
+		_ = db.AddError(err)
+		return nil
+	}
+	oc.DoUpdates = oracleFilterONAssignments(oc.DoUpdates, len(original.DoUpdates), target)
+	if err := validateOracleConflictKey(db, target); err != nil {
 		_ = db.AddError(err)
 		return nil
 	}
@@ -207,11 +201,18 @@ func buildOracleUpserts(db *gorm.DB) []oracleInsertSQL {
 			upsertRow.columns = append(upsertRow.columns, values.Columns[idx])
 			upsertRow.values = append(upsertRow.values, v)
 		}
-		if len(upsertRow.columns) == 0 {
+		upsertRow.generate = oracleRowGeneratesPK(stmt, target, upsertRow.columns)
+		if pk := oracleGeneratedPKField(stmt); pk != nil && !upsertRow.generate && !oracleRowHasColumn(upsertRow.columns, pk.DBName) {
+			_ = db.AddError(fmt.Errorf("%w: non-primary-key MERGE requires an explicit primary key", ErrUpsertUnsupported))
+			return nil
+		}
+		if len(upsertRow.columns) == 0 && upsertRow.generate {
+			upsertRow.columns = values.Columns[:1]
+			upsertRow.values = []interface{}{oracleDefaultMarker{}}
+		} else if len(upsertRow.columns) == 0 {
 			_ = db.AddError(fmt.Errorf("%w: upsert row without columns", gorm.ErrInvalidData))
 			return nil
 		}
-		upsertRow.generate = oracleRowGeneratesPK(stmt, target, upsertRow.columns)
 		rows = append(rows, upsertRow)
 	}
 
@@ -231,12 +232,12 @@ func buildOracleUpserts(db *gorm.DB) []oracleInsertSQL {
 	// apply; refusing beats silently dropping the semantics (design.md §5.3.3).
 	// UpdateAll assignments are auto-expanded over the batch's union columns,
 	// so per-row skipping stays valid for them.
-	if !oc.UpdateAll {
+	if len(original.DoUpdates) > 0 {
 		for i := range rows {
 			if rows[i].generate {
 				continue
 			}
-			for _, assignment := range oc.DoUpdates {
+			for _, assignment := range original.DoUpdates {
 				if col, ok := assignment.Value.(clause.Column); ok && col.Table == excludedTable &&
 					!oracleRowHasColumn(rows[i].columns, col.Name) {
 					_ = db.AddError(fmt.Errorf("%w: assignment column %q is not provided by every row", ErrUpsertUnsupported, col.Name))
@@ -273,9 +274,15 @@ func buildOracleUpserts(db *gorm.DB) []oracleInsertSQL {
 func oracleConflictTarget(stmt *gorm.Statement, oc clause.OnConflict) ([]clause.Column, error) {
 	if len(oc.Columns) > 0 {
 		target := make([]clause.Column, 0, len(oc.Columns))
+		seen := make(map[string]bool, len(oc.Columns))
 		for _, c := range oc.Columns {
-			if c.Name == "" {
-				return nil, fmt.Errorf("%w: empty conflict target column", ErrUpsertUnsupported)
+			name := oracleIdentifierName(c.Name)
+			if c.Name == "" || seen[name] {
+				return nil, fmt.Errorf("%w: empty or duplicate conflict target column", ErrUpsertUnsupported)
+			}
+			seen[name] = true
+			if field := oracleModelField(stmt.Schema, name); field != nil {
+				c.Name = field.DBName
 			}
 			target = append(target, clause.Column{Name: c.Name})
 		}
@@ -306,7 +313,7 @@ func validateOracleOnConflict(oc clause.OnConflict, target []clause.Column) erro
 	}
 	for _, assignment := range oc.DoUpdates {
 		for _, tc := range target {
-			if assignment.Column.Name == tc.Name {
+			if oracleIdentifierName(assignment.Column.Name) == oracleIdentifierName(tc.Name) {
 				return fmt.Errorf("%w: updating conflict-target column %q is not supported", ErrUpsertUnsupported, tc.Name)
 			}
 		}
@@ -330,7 +337,7 @@ func oracleRowGeneratesPK(stmt *gorm.Statement, target []clause.Column, cols []c
 
 func oracleRowHasColumn(cols []clause.Column, name string) bool {
 	for _, c := range cols {
-		if c.Name == name {
+		if oracleIdentifierName(c.Name) == oracleIdentifierName(name) {
 			return true
 		}
 	}
@@ -572,8 +579,9 @@ func groupOracleInsertRows(values clause.Values) []oracleInsertGroup {
 	}
 
 	var (
-		groups []oracleInsertGroup
-		curSig []int
+		groups     []oracleInsertGroup
+		curSig     []int
+		curDefault bool
 	)
 	for rowIdx, row := range values.Values {
 		sig := make([]int, 0, len(row))
@@ -582,12 +590,14 @@ func groupOracleInsertRows(values clause.Values) []oracleInsertGroup {
 				sig = append(sig, idx)
 			}
 		}
-		if len(sig) == 0 {
+		allDefault := len(sig) == 0
+		if allDefault {
 			sig = append(sig, 0)
 		}
 
-		if !equalIndexes(curSig, sig) {
+		if !equalIndexes(curSig, sig) || curDefault != allDefault {
 			curSig = sig
+			curDefault = allDefault
 			columns := make([]clause.Column, 0, len(sig))
 			for _, idx := range sig {
 				columns = append(columns, values.Columns[idx])
@@ -664,6 +674,9 @@ func writeOracleValues(stmt *gorm.Statement, columns []clause.Column, row []inte
 // firstOracleDefaultField returns the first database-default field of the
 // schema for the all-default single-column DEFAULT insert.
 func firstOracleDefaultField(stmt *gorm.Statement) *schema.Field {
+	if stmt.Schema == nil {
+		return nil
+	}
 	for _, field := range stmt.Schema.FieldsWithDefaultDBValue {
 		if field.DBName != "" {
 			return field
@@ -841,6 +854,10 @@ func oracleDataTypeOf(d *Dialector, field *schema.Field) string {
 // oracleNumberType maps the field bit size to a NUMBER precision. int64 needs
 // 19 digits, uint64 needs 20 (max 18446744073709551615).
 func oracleNumberType(field *schema.Field) string {
+	return fmt.Sprintf("NUMBER(%d,0)", oracleNumberPrecision(field))
+}
+
+func oracleNumberPrecision(field *schema.Field) int {
 	var precision int
 	switch {
 	case field.Size <= 8:
@@ -854,7 +871,7 @@ func oracleNumberType(field *schema.Field) string {
 	default:
 		precision = 19
 	}
-	return fmt.Sprintf("NUMBER(%d,0)", precision)
+	return precision
 }
 
 func (d *Dialector) oracleFloatType(field *schema.Field) string {
@@ -890,7 +907,7 @@ func (d *Dialector) oracleTimeType(field *schema.Field) string {
 	if field.Precision == 0 && field.TagSettings["PRECISION"] == "" {
 		field.Precision = oracleDatetimePrecision
 	}
-	if field.Precision > 0 {
+	if field.Precision > 0 || field.TagSettings["PRECISION"] == "0" {
 		return fmt.Sprintf("TIMESTAMP(%d)", field.Precision)
 	}
 	return "TIMESTAMP"

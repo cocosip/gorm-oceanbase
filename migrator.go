@@ -1,9 +1,13 @@
 package oceanbase
 
 import (
+	"context"
 	"database/sql"
+	"database/sql/driver"
+	"errors"
 	"fmt"
 	"strings"
+	"time"
 
 	"gorm.io/gorm"
 	"gorm.io/gorm/clause"
@@ -271,16 +275,34 @@ func (m *mysqlMigrator) RenameIndex(value interface{}, oldName, newName string) 
 // DropTable drops tables with foreign key checks disabled.
 func (m *mysqlMigrator) DropTable(values ...interface{}) error {
 	values = m.ReorderModels(values, false)
-	return m.DB.Connection(func(tx *gorm.DB) error {
-		tx.Exec("SET FOREIGN_KEY_CHECKS = 0;")
+	return m.DB.Connection(func(tx *gorm.DB) (err error) {
+		var original int
+		if err = tx.Session(&gorm.Session{}).Raw("SELECT @@FOREIGN_KEY_CHECKS").Row().Scan(&original); err != nil {
+			return err
+		}
+		if err = tx.Session(&gorm.Session{}).Exec("SET FOREIGN_KEY_CHECKS = 0").Error; err != nil {
+			return err
+		}
+		defer func() {
+			ctx, cancel := context.WithTimeout(context.WithoutCancel(tx.Statement.Context), 5*time.Second)
+			defer cancel()
+			restoreErr := tx.WithContext(ctx).Exec(fmt.Sprintf("SET FOREIGN_KEY_CHECKS = %d", original)).Error
+			if restoreErr != nil {
+				// A pool must never reuse a connection with unknown constraint state.
+				if conn, ok := tx.Statement.ConnPool.(*sql.Conn); ok {
+					_ = conn.Raw(func(interface{}) error { return driver.ErrBadConn })
+				}
+			}
+			err = errors.Join(err, restoreErr)
+		}()
 		for i := len(values) - 1; i >= 0; i-- {
 			if err := m.RunWithValue(values[i], func(stmt *gorm.Statement) error {
-				return tx.Exec("DROP TABLE IF EXISTS ? CASCADE", m.CurrentTable(stmt)).Error
+				return tx.Session(&gorm.Session{}).Exec("DROP TABLE IF EXISTS ? CASCADE", m.CurrentTable(stmt)).Error
 			}); err != nil {
 				return err
 			}
 		}
-		return tx.Exec("SET FOREIGN_KEY_CHECKS = 1;").Error
+		return nil
 	})
 }
 

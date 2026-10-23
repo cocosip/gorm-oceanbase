@@ -44,6 +44,85 @@ type oracleArticle struct {
 	Rating int `gorm:"default:(50)"`
 }
 
+type oracleReviewKey struct {
+	ID uint
+}
+
+func TestOracleDefaultOnlyBatch(t *testing.T) {
+	db := openOracle(t)
+	if err := db.AutoMigrate(&oracleReviewKey{}); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = db.Migrator().DropTable(&oracleReviewKey{}) })
+	rows := []oracleReviewKey{{}, {}, {}}
+	if err := db.Create(&rows).Error; err != nil {
+		t.Fatal(err)
+	}
+	ids := make(map[uint]bool)
+	for _, row := range rows {
+		if row.ID == 0 || ids[row.ID] {
+			t.Fatalf("keys=%v", rows)
+		}
+		ids[row.ID] = true
+	}
+	var count int64
+	if err := db.Model(&oracleReviewKey{}).Count(&count).Error; err != nil {
+		t.Fatal(err)
+	}
+	if count != 3 {
+		t.Fatalf("rows in database=%d, want 3", count)
+	}
+}
+
+type oracleReviewUnique struct {
+	ID     uint   `gorm:"autoIncrement:false"`
+	Code   string `gorm:"size:32;uniqueIndex:uni_review_code_region"`
+	Region string `gorm:"size:32;uniqueIndex:uni_review_code_region"`
+	Name   string `gorm:"size:64"`
+}
+
+func TestOracleUniqueUpsertAndRepeatedMigration(t *testing.T) {
+	db := openOracle(t)
+	if err := db.AutoMigrate(&oracleReviewUnique{}); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = db.Migrator().DropTable(&oracleReviewUnique{}) })
+	if err := db.AutoMigrate(&oracleReviewUnique{}); err != nil {
+		t.Fatal(err)
+	}
+	row := oracleReviewUnique{ID: 1, Code: "c", Region: "r", Name: "old"}
+	if err := db.Create(&row).Error; err != nil {
+		t.Fatal(err)
+	}
+	row.ID, row.Name = 2, "new"
+	if err := db.Clauses(clause.OnConflict{Columns: []clause.Column{{Name: "region"}, {Name: "code"}}, UpdateAll: true}).Create(&row).Error; err != nil {
+		t.Fatal(err)
+	}
+	var found oracleReviewUnique
+	if err := db.First(&found, 1).Error; err != nil {
+		t.Fatal(err)
+	}
+	if found.Name != "new" {
+		t.Fatalf("row=%+v", found)
+	}
+	err := db.Clauses(clause.OnConflict{Columns: []clause.Column{{Name: "code"}}, DoNothing: true}).Create(&row).Error
+	if !errors.Is(err, oceanbase.ErrUpsertUnsupported) {
+		t.Fatalf("nonunique target err=%v", err)
+	}
+	if err := db.Migrator().RenameIndex(&oracleReviewUnique{}, "uni_review_code_region", "uni_review_renamed"); err != nil {
+		t.Fatal(err)
+	}
+	if !db.Migrator().HasIndex(&oracleReviewUnique{}, "uni_review_renamed") {
+		t.Fatal("renamed index missing")
+	}
+	if err := db.Migrator().DropIndex(&oracleReviewUnique{}, "uni_review_renamed"); err != nil {
+		t.Fatal(err)
+	}
+	if err := db.Migrator().AlterColumn(&oracleReviewUnique{}, "Name"); err != nil {
+		t.Fatal(err)
+	}
+}
+
 func TestOracleCRUDAndMigrate(t *testing.T) {
 	db := openOracle(t)
 	if err := db.AutoMigrate(&oracleArticle{}); err != nil {
