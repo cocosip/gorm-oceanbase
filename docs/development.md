@@ -1,102 +1,115 @@
-# gorm-oceanbase 开发文档（任务分解与进度）
+# gorm-oceanbase development plan and progress
 
-本文档基于 [design.md](design.md) 定义开发任务，直接通过各任务的状态列表示当前进度。
+This document defines development tasks from [design.md](design.md). Each task's status column tracks
+current progress directly.
 
-**当前进度：已完成 22 / 32，进行中 7，未开始 3，受阻 0。下一项：复验 Oracle 失败项目，并补齐 G22/G39 剩余集成范围。**
+**Current progress: 22 / 32 completed, 7 in progress, 3 not started, 0 blocked. Next: revalidate Oracle
+failures and complete the remaining G22/G39 integration coverage.**
 
-**本轮说明**：依赖已升级为 `go-oceanbase v0.1.2`；独立验收程序 `cmd/gorm-obtest` 已在 OceanBase 4.4.2.2 执行四目标主矩阵：346 pass / 8 fail / 0 skip / 70 not_applicable；补充 MySQL 档案 5 两目标：174 pass / 0 fail / 0 skip / 38 not_applicable。MySQL 全部适用用例通过；Oracle 尚未全部通过，见[实测说明](../tests/acceptance/README.md)。已修复 MySQL 全默认值批量写入丢行及验收程序问题，并清理本次自建对象。固定表名的旧 integration 套件未在该 schema 执行，G22/G39 保持部分完成，不据单一服务器版本扩大兼容声明。
+**Latest validation round**: the dependency was upgraded to `go-oceanbase v0.1.2`. The standalone
+`cmd/gorm-obtest` tool ran a four-target main matrix against OceanBase 4.4.2.2:
+346 pass / 8 fail / 0 skip / 70 not_applicable. Two supplemental MySQL profile 5 targets produced
+174 pass / 0 fail / 0 skip / 38 not_applicable. All applicable MySQL cases passed; Oracle still has
+failures. See the [live test details](../tests/acceptance/README.md). Dropped rows in MySQL default-only
+batch inserts and acceptance-tool issues were fixed, and objects created by that run were cleaned up.
+The older integration suite with fixed table names was not executed in that schema. G22/G39 remain
+partially complete; one server version does not justify broader compatibility claims.
 
-**维护规则**：
+**Maintenance rules**:
 
-- 开始任务时将该行状态改为 `◐`；满足该任务验收要求后改为 `✅`；受阻时改为 `⚠️`，在该行简述原因。部分完成保持 `◐`，在该行简述剩余工作。
-- 每次更新任务状态，同步顶部进度汇总、下一项任务和阶段状态；阶段内所有任务验收通过后，阶段才标为 `✅`。
-- 任务范围变化时直接修改对应行的内容、依赖和验收，并同步设计文档；不在文末追加工作日志或变更流水。
-- 文档修订、临时审查实验和外部驱动测试不等于本仓库开发任务完成，不能据此标记 `✅`。
+- Set a task to `◐` when starting, `✅` after meeting its acceptance criteria, or `⚠️` when blocked,
+  with a brief reason in the row. Keep partially completed tasks at `◐` and describe the remaining work.
+- Whenever a task status changes, update the progress summary, next task, and phase status above.
+  Mark a phase `✅` only after every task in it passes acceptance.
+- Edit task scope, dependencies, and acceptance criteria in place, keeping the design document in sync.
+  Do not append work logs or change histories at the end.
+- Documentation changes, temporary review experiments, and external driver tests do not complete
+  this repository's development tasks and cannot justify `✅`.
 
-**状态图例**：☐ 未开始 ｜ ◐ 进行中 ｜ ✅ 已完成 ｜ ⚠️ 受阻/搁置
+**Status legend**: ☐ Not started | ◐ In progress | ✅ Completed | ⚠️ Blocked/on hold
 
 ---
 
-## 1. 阶段总览
+## 1. Phase overview
 
-| 阶段 | 目标 | 对应设计文档 | 状态 |
+| Phase | Goal | Design sections | Status |
 | --- | --- | --- | --- |
-| M0 | 仓库骨架与依赖就绪 | §2 | ✅ |
-| M1 | **MySQL 模式完整可用**（首个可用版本） | §3–§5、§7、§10 | ◐ |
-| M2 | Oracle 模式可用 | §5、§6、§9 | ◐ |
-| M3 | 增强：非主键字段与通用 RETURNING、驱动扩展桥接、兼容矩阵 | §5.3、§8 | ☐ |
+| M0 | Repository skeleton and dependencies ready | §2 | ✅ |
+| M1 | **Fully usable MySQL mode** (first usable release) | §3–§5, §7, §10 | ◐ |
+| M2 | Usable Oracle mode | §5, §6, §9 | ◐ |
+| M3 | Enhancements: non-primary fields and generic RETURNING, driver extension bridge, compatibility matrix | §5.3, §8 | ☐ |
 
 ---
 
-## 2. M0：仓库骨架
+## 2. M0: repository skeleton
 
-| ID | 任务 | 内容要点 | 依赖 | 验收 | 状态 |
+| ID | Task | Scope | Dependencies | Acceptance | Status |
 | --- | --- | --- | --- | --- | --- |
-| G01 | 模块初始化 | `go.mod`（module github.com/cocosip/gorm-oceanbase，go 1.26）；固定开发基准 `gorm.io/gorm@v1.31.2`（当前最新）、`github.com/cocosip/go-oceanbase@v0.1.2`（远程模块，不用 replace）；更低 GORM 版本按矩阵验收后声明 | — | `go build ./...` 通过 | ✅ |
-| G02 | README 骨架 | 项目定位、快速上手（对齐 design.md §3 入口示例）、文档索引 | G01 | 评审通过 | ✅ |
-| G03 | CI 骨架 | GitHub Actions：build + vet + 无库 test + golangci-lint（复用现有 .golangci.yml）；集成包建立后补 `go test -tags=integration ./tests/integration -run '^$'` 编译检查 | G01 | 骨架阶段常规检查通过；G22/G39 建立后集成编译通过，不将 skip 记作真实验收 | ✅ |
+| G01 | Initialize module | `go.mod`: module github.com/cocosip/gorm-oceanbase, go 1.26; pin development baselines `gorm.io/gorm@v1.31.2` (current latest) and `github.com/cocosip/go-oceanbase@v0.1.2` (remote module, no replace); earlier GORM support requires a version matrix | — | `go build ./...` passes | ✅ |
+| G02 | README skeleton | Project purpose, quick start matching design.md §3 entry points, documentation index | G01 | Review passes | ✅ |
+| G03 | CI skeleton | GitHub Actions: build, vet, offline tests, golangci-lint using existing .golangci.yml; add `go test -tags=integration ./tests/integration -run '^$'` after integration packages exist | G01 | Routine skeleton checks pass; integration compilation passes after G22/G39 exist; skips do not count as live acceptance | ✅ |
 
-## 3. M1：MySQL 模式完整可用
+## 3. M1: fully usable MySQL mode
 
-### 3.1 Dialector 主体（oceanbase.go、version.go）
+### 3.1 Dialector core (oceanbase.go, version.go)
 
-| ID | 任务 | 内容要点 | 依赖 | 验收 | 状态 |
+| ID | Task | Scope | Dependencies | Acceptance | Status |
 | --- | --- | --- | --- | --- | --- |
-| G10 | Config 与入口 | design.md §3 字段；Open/New 不联网；校验 DSN/DSNConfig/Conn 互斥；记录 DSN 显式参数后用驱动 ParseDSN；复制结构化配置，不反向序列化或保留自定义 DriverName 路径 | G01 | 单测：输入分支、无副作用、错误由 Initialize 返回、调用者配置不被修改 | ✅ |
-| G10a | MySQL 档案注入 | 顶层非零值 > DSN 显式参数/DSNConfig 非零值 > 默认 8；在正式 Connector 前完成；保留已规范化 DSNConfig 中的 5；Oracle 不注入（design.md §4.2、R6） | G10, G11 | 单测：实际 Connector 配置为 8、显式 5 保留、来源优先级；TIME 小数与 DATETIME 行为分别验证 | ◐ |
-| G10b | 时间读取策略 | 内部 Session.ParseTime=true；DSN 显式 false 报配置错误；DSNConfig bool 零值按 GORM 策略开启；外部 Conn 的前提写入文档（design.md §4.2） | G10 | 单测：time.Time 扫描成功、显式 false 拒绝、外部池不被修改 | ◐ |
-| G11 | 模式确定 | 顶层非零 Mode > DSN 显式模式/DSNConfig 非零 Mode > MySQL；零值表示未指定；仅 DSN mode=auto 用临时池和已有 SessionVariable 读取并校验模式，关闭临时资源后固化正式配置（design.md §4.1） | G10 | 单测/协议模拟：显式来源与覆盖、MYSQL/ORACLE/NULL/未知值、超时和权限错误不误判；M1 检出 Oracle 明确拒绝，不套用 MySQL 方言 | ◐ |
-| G12 | NowFunc 安装 | Apply 记录用户是否已设置；Initialize 在最终模式确定后安装 MySQL/Oracle 默认精度策略，auto 不能预先按 MySQL 处理（design.md §4） | G11 | 单测：两种精度与 auto 最终模式、不覆盖用户设置 | ✅ |
-| G13 | 版本探测 | MySQL `SELECT OB_VERSION()`，仅函数不支持时回退 VERSION()；Oracle `SELECT ob_version() FROM dual`；按真实 OB 版本解析；用户 ServerVersion/跳过查询/未知版本保守策略；与驱动自身探测开关区分 | G11 | 单测：双方言 SQL、OceanBase 标记解析、有限回退、错误传播、未知版本禁用需确认的能力 | ✅ |
-| G14 | Initialize | 先解析/探测/合并最终配置，再 NewConnector→OpenDB；外部 Conn 要求显式具体 Mode；候选池仅在所有可失败步骤成功后挂到 db.ConnPool，提前挂载须在错误路径解除引用，避免 GORM 关闭外部池/事务所属池；失败关闭自建资源；注册 callbacks/ClauseBuilders、SavePointerDialectorInterface，通过实际 ConnPool 支持 db.DB()（design.md §4、R13） | G10a, G10b, G11, G12, G13 | 协议模拟：最终配置、默认值和资源释放；从 gorm.Open 注入初始化错误后，原外部池仍可查询、事务仍可使用，含包装池；G22 真实连接验收 | ✅ |
+| G10 | Config and entry points | Fields from design.md §3; Open/New perform no networking; validate DSN/DSNConfig/Conn exclusivity; record explicit DSN parameters before driver ParseDSN; copy structured configuration without serializing back or retaining a custom DriverName path | G01 | Unit tests: input branches, no side effects, errors returned by Initialize, caller config unchanged | ✅ |
+| G10a | MySQL profile injection | Nonzero top-level value > explicit DSN/nonzero DSNConfig > default 8; apply before final Connector creation; preserve 5 in normalized DSNConfig; no injection for Oracle (design.md §4.2, R6) | G10, G11 | Unit tests: actual Connector config uses 8, explicit 5 preserved, source precedence; verify TIME fractions and DATETIME behavior separately | ◐ |
+| G10b | Time read policy | Internal Session.ParseTime=true; reject explicit DSN false; enable a zero DSNConfig bool under GORM policy; document external Conn prerequisites (design.md §4.2) | G10 | Unit tests: successful time.Time scanning, explicit false rejected, external pool unchanged | ◐ |
+| G11 | Mode resolution | Nonzero top-level Mode > explicit DSN/nonzero DSNConfig Mode > MySQL; zero is unspecified; only DSN mode=auto uses a temporary pool and existing SessionVariable to read/validate mode, then closes temporary resources and fixes final config (design.md §4.1) | G10 | Unit/protocol tests: explicit sources and overrides, MYSQL/ORACLE/NULL/unknown values, timeout/permission errors; during M1 explicitly reject detected Oracle rather than applying MySQL behavior | ◐ |
+| G12 | NowFunc installation | Apply records caller customization; Initialize installs MySQL/Oracle precision after final mode resolution; auto must not default prematurely to MySQL (design.md §4) | G11 | Unit tests: both precisions, final auto mode, caller customization preserved | ✅ |
+| G13 | Version detection | MySQL `SELECT OB_VERSION()`, falling back to VERSION() only for unsupported functions; Oracle `SELECT ob_version() FROM dual`; parse actual OB version; handle supplied ServerVersion, skipped probing, and unknown versions conservatively; distinguish driver probing | G11 | Unit tests: both SQL variants, OceanBase marker parsing, limited fallback, error propagation, unconfirmed features disabled for unknown versions | ✅ |
+| G14 | Initialize | Parse/detect/merge final config before NewConnector→OpenDB; external Conn requires explicit concrete Mode; attach candidate pool to db.ConnPool only after all fallible steps; detach on early-attachment failure paths to prevent GORM closing external pools/transaction pools; close owned resources on failure; register callbacks/ClauseBuilders and SavePointerDialectorInterface; support db.DB() through actual ConnPool (design.md §4, R13) | G10a, G10b, G11, G12, G13 | Protocol tests: final config, defaults, resource release; initialization failures through gorm.Open preserve caller pool queries and transactions, including wrappers; live connections in G22 | ✅ |
 
-### 3.2 MySQL 方言行为（dialect_mysql.go）
+### 3.2 MySQL dialect behavior (dialect_mysql.go)
 
-| ID | 任务 | 内容要点 | 依赖 | 验收 | 状态 |
+| ID | Task | Scope | Dependencies | Acceptance | Status |
 | --- | --- | --- | --- | --- | --- |
-| G15 | QuoteTo | 反引号状态机（含 `.` 分隔、`` ` `` 转义），行为对齐 gorm mysql driver | G10 | 单测：引用用例集与 mysql driver 输出一致 | ✅ |
-| G16 | DataTypeOf | design.md §5.1 MySQL 表全量：Bool/Int/Uint/Float/String/Time/Bytes/自定义 + AUTO_INCREMENT/unsigned；字符串按字段 Size、DefaultStringSize、条件 191、longtext 顺序决策，不统一默认 191 | G10 | 单测：全枚举快照；普通 string→longtext、主键/默认值/INDEX/UNIQUE→varchar(191)、显式长度/全局长度及 mediumtext/longtext 边界，对拍 mysql v1.6.0 | ✅ |
-| G17 | 其余接口 | `DefaultValueOf`(DEFAULT)、`BindVarTo`(?)、`Explain` | G10 | 单测 | ✅ |
-| G18 | ClauseBuilders | ON CONFLICT→`ON DUPLICATE KEY UPDATE`（含 excluded→VALUES(col)）；空 VALUES() 特例；按版本 FOR SHARE（design.md §5 表） | G14 | DryRun SQL 快照测试 | ✅ |
+| G15 | QuoteTo | Backtick state machine, including dot separators and escaped backticks, matching the gorm mysql driver | G10 | Unit tests: quoting cases match mysql driver output | ✅ |
+| G16 | DataTypeOf | Complete MySQL table in design.md §5.1: Bool/Int/Uint/Float/String/Time/Bytes/custom, AUTO_INCREMENT/unsigned; strings follow field Size, DefaultStringSize, conditional 191, then longtext rather than a universal 191 default | G10 | Full mapping snapshots; ordinary string→longtext, primary/default/INDEX/UNIQUE fields→varchar(191), explicit/global lengths, mediumtext/longtext boundaries; compare mysql v1.6.0 | ✅ |
+| G17 | Other interfaces | `DefaultValueOf` (DEFAULT), `BindVarTo` (?), `Explain` | G10 | Unit tests | ✅ |
+| G18 | ClauseBuilders | ON CONFLICT→`ON DUPLICATE KEY UPDATE`, including excluded→VALUES(col); empty VALUES() special case; version-dependent FOR SHARE (design.md §5 table) | G14 | DryRun SQL snapshots | ✅ |
 
-### 3.3 Migrator 与错误翻译（migrator.go、error_translator.go）
+### 3.3 Migrator and error translation (migrator.go, error_translator.go)
 
-| ID | 任务 | 内容要点 | 依赖 | 验收 | 状态 |
+| ID | Task | Scope | Dependencies | Acceptance | Status |
 | --- | --- | --- | --- | --- | --- |
-| G19 | MySQL Migrator | 基于通用 migrator + information_schema：表/列/索引/约束/视图/类型查询；ColumnTypes/AlterColumn/RenameColumn 等（特性开关接 G13 结果） | G14, G16 | 集成：AutoMigrate 全流程 + 增量变更 | ◐ |
-| G20 | 错误翻译 | `*dberrors.Error` 按 MySQL 码表：1062→ErrDuplicatedKey，1451/1452→ErrForeignKeyViolated；未命中原样返回 | G11 | 单测：码表命中/未命中/非驱动错误 | ✅ |
+| G19 | MySQL Migrator | Generic migrator plus information_schema queries for tables/columns/indexes/constraints/views/types; ColumnTypes/AlterColumn/RenameColumn, etc., with feature flags from G13 | G14, G16 | Integration: complete AutoMigrate workflow and incremental changes | ◐ |
+| G20 | Error translation | MySQL `*dberrors.Error` codes: 1062→ErrDuplicatedKey, 1451/1452→ErrForeignKeyViolated; unmatched errors unchanged | G11 | Unit tests: matched/unmatched codes and non-driver errors | ✅ |
 
-### 3.4 测试与文档
+### 3.4 Tests and documentation
 
-| ID | 任务 | 内容要点 | 依赖 | 验收 | 状态 |
+| ID | Task | Scope | Dependencies | Acceptance | Status |
 | --- | --- | --- | --- | --- | --- |
-| G21 | 单元测试收口 | 配置/连接边界及 DryRun SQL 对拍，含 gorm.Open 失败后的外部资源所有权和字符串默认规则；差异白名单（探测、boolean 等）；最低 GORM 版本单独跑矩阵，未跑版本不声明支持（design.md §10） | G10–G20（含 G10a/G10b） | `go test ./... -count=1` 全绿；记录实际 GORM 测试版本 | ✅ |
-| G22 | MySQL 集成测试 | integration tag、OB_MYSQL_DSN：CRUD、关联、事务/SavePoint、AutoMigrate、并发；ParseTime=true 的 time.Time 读取；datetime(3)/(6) 往返；TIME(3)/(6) 的档案 5/8 差异；与 G03 同步编译检查 | G14–G20 | 真实 MySQL 租户验收，记录版本和 pass/fail/skip；DSN 缺失的 skip 不算通过 | ◐ |
-| G23 | MySQL 模式使用文档 | README：模式/档案优先级、ParseTime 要求、外部池前提及所有权、字符串默认长度规则、auto 错误语义、无混合模式租户；仅声明实际验收范围 | G21, G22 | 评审通过 | ◐ |
+| G21 | Complete unit coverage | Configuration/connection boundaries and DryRun SQL comparisons, including external resource ownership after gorm.Open failure and string defaults; explicit allowed differences such as probing/boolean; separate minimum-GORM matrix, no support claims for untested versions (design.md §10) | G10–G20 (including G10a/G10b) | `go test ./... -count=1` passes; record actual GORM version tested | ✅ |
+| G22 | MySQL integration tests | integration tag and OB_MYSQL_DSN: CRUD, associations, transactions/SavePoint, AutoMigrate, concurrency; time.Time reads with ParseTime=true; datetime(3)/(6) round trips; TIME(3)/(6) differences under profiles 5/8; synchronize compile checks with G03 | G14–G20 | Live MySQL acceptance with version and pass/fail/skip counts; missing-DSN skips are not passes | ◐ |
+| G23 | MySQL usage documentation | README: mode/profile precedence, ParseTime, external pool prerequisites/ownership, string defaults, auto errors, no mixed-mode tenants; claim only validated scope | G21, G22 | Review passes | ◐ |
 
-## 4. M2：Oracle 模式可用
+## 4. M2: usable Oracle mode
 
-| ID | 任务 | 内容要点 | 依赖 | 验收 | 状态 |
+| ID | Task | Scope | Dependencies | Acceptance | Status |
 | --- | --- | --- | --- | --- | --- |
-| G30 | Oracle 模式入口 | 在 G11 的模式解析上接入 Oracle 行为；复用 SessionVariable，不新增 PinnedMode；启用 G13 的 Oracle 产品版本查询及最终模式 NowFunc | G11, G12, G13, G14 | 单测/协议模拟：显式 oracle、auto→oracle、读取错误直接返回；G39 真实验收 | ✅ |
-| G31 | QuoteTo(Oracle) | 双引号 + 未加引号标识符大写化（R2）；区分显式大小写名称，覆盖结果列到模型字段的映射 | G30 | 单测：大小写/转义/扫描；G39 真实大小写验收 | ✅ |
-| G32 | DataTypeOf(Oracle) | Int64→NUMBER(19,0)、Uint64→NUMBER(20,0)；其余 NUMBER/VARCHAR2/CLOB/RAW/BLOB/TIMESTAMP；Object/Array 必须显式 SQL 类型 tag、服务器预处理；限定带时区 Scanner 路径（design.md §5.1/5.2） | G30 | 单测：映射、int64/uint64 极值、复杂类型推断负例与 tag 正例 | ✅ |
-| G33 | LIMIT/FOR 改写 | `ClauseBuilders["LIMIT"]` → `OFFSET n ROWS FETCH FIRST m ROWS ONLY`；`ClauseBuilders["FOR"]` 将 `FOR SHARE` 退化为 `FOR UPDATE`（Oracle 无共享锁读，README 标注语义变化） | G30 | DryRun 快照 | ✅ |
-| G34 | Oracle Create 与批量插入 | 替换 gorm:create，保留事务/hook/关联回调；整句构建 INSERT/INSERT ALL；default tag 零值与显式 NULL 按 GORM 输入形式区分；按相邻相同列集合批量，必要时逐条执行；为 G35/G36 保留逐行冲突目标与主键上下文（design.md §5.3） | G30, G31, G32 | 完整 SQL 快照无重复前缀；结构体默认值、map nil/NULL 表达式、不同列集合/输入顺序与执行错误用例；生成主键路径接 G36 | ✅ |
-| G35 | MERGE upsert 与主键分流 | 校验有效匹配列和唯一约束；UpdateAll 排除 ON 列，显式修改 ON 列拒绝，DoNothing 无更新分支；主键已提供/预分配时 MERGE；单列自动生成主键缺省且目标仅为主键时交 G36 INSERT RETURNING，不按子句来源判断；非主键目标且需生成回填时拒绝；当前回调批量先校验再写入，显式赋值引用行未提供的列同样在 DML 前拒绝（design.md §5.3、R14） | G34 | SQL 快照与 G39 集成：插入/更新/DoNothing、关联自动 ON CONFLICT、Save(slice) 与混合主键分流；不支持条件/ON 列更新及非主键生成请求在对应回调 DML 前拒绝；竞争错误不重试 | ✅ |
-| G36 | 生成主键与基础 RETURNING | IDENTITY 候选门槛 4.2.1 待真实验收、未知/低版本 DDL 前拒绝；单行 INSERT RETURNING INTO + sql.Out 回填，批量逐条回填；接 G35 主键目标分流，关联 ID 在外键/中间表写入前回填；序列 seq.NEXTVAL 预分配、autoIncrement:false；OracleMigrator 序列扩展（design.md §6） | G13, G32, G34, G35 | 模拟：不调用 LastInsertId、不重放；集成：IDENTITY/序列/显式主键、混合 ID、新建各类关联及 FullSaveAssociations、Save(slice)、外键/中间表引用、默认事务回滚与关闭事务后的错误 | ✅ |
-| G37 | Oracle Migrator | ALL_TAB_COLUMNS/ALL_CONSTRAINTS/ALL_INDEXES/ALL_CATALOG 查询；接 G36 的主键 DDL 与已验收版本门槛，未知/不支持版本在 DDL 前拒绝 IDENTITY | G31, G32, G36 | 集成：AutoMigrate 全流程，含主键 DDL 的允许/拒绝路径 | ✅ |
-| G38 | Oracle 错误翻译 | ORA 码表：1→ErrDuplicatedKey，2291/2292→ErrForeignKeyViolated（按模式隔离） | G30 | 单测 | ✅ |
-| G39 | Oracle 集成测试与文档 | OB_ORACLE_DSN：CRUD/迁移、标识符扫描、默认值/NULL、批量主键回填、受限 MERGE；新建 belongs-to/has-one/has-many/many-to-many、混合新旧对象、FullSaveAssociations、Save(slice)；NUMBER 边界、Object 预处理/文本负例、Array 存储限制；与 G03 同步编译检查 | G31–G38 | 真实 Oracle 验收并记录版本/pass/fail/skip；验证外键/中间表、拒绝与事务边界；文档明确非主键 MERGE 不回填目标 ID，核实 IDENTITY 门槛；不把模拟或 skip 记作通过 | ◐ |
+| G30 | Oracle entry path | Connect Oracle behavior to G11 mode resolution; reuse SessionVariable without new PinnedMode; enable G13 Oracle product-version query and final-mode NowFunc | G11, G12, G13, G14 | Unit/protocol tests: explicit oracle, auto→oracle, read errors propagated; live acceptance in G39 | ✅ |
+| G31 | QuoteTo (Oracle) | Double quotes and uppercase unquoted identifiers (R2); distinguish explicit-case names and map result columns to model fields | G30 | Unit tests: case, escaping, scanning; live case validation in G39 | ✅ |
+| G32 | DataTypeOf (Oracle) | Int64→NUMBER(19,0), Uint64→NUMBER(20,0); other NUMBER/VARCHAR2/CLOB/RAW/BLOB/TIMESTAMP types; Object/Array require explicit SQL type tags and server preparation; restrict time zone Scanner paths (design.md §5.1/5.2) | G30 | Unit tests: mappings, int64/uint64 limits, negative complex-type inference cases and positive tagged cases | ✅ |
+| G33 | LIMIT/FOR rewriting | `ClauseBuilders["LIMIT"]`→`OFFSET n ROWS FETCH FIRST m ROWS ONLY`; `ClauseBuilders["FOR"]` converts `FOR SHARE` to `FOR UPDATE` because Oracle lacks shared-lock reads; document semantic change in README | G30 | DryRun snapshots | ✅ |
+| G34 | Oracle Create and batch inserts | Replace gorm:create while retaining transaction/hook/association callbacks; build full INSERT/INSERT ALL; distinguish default-tag zero values from explicit NULL by GORM input form; batch adjacent identical column sets or execute individually; retain per-row conflict target and key context for G35/G36 (design.md §5.3) | G30, G31, G32 | Full SQL snapshots without duplicate prefixes; struct defaults, map nil/NULL expressions, different column sets/order, execution errors; generated-key path uses G36 | ✅ |
+| G35 | MERGE upsert and key routing | Validate effective match columns and uniqueness; UpdateAll excludes ON columns, reject explicit ON-column updates, DoNothing omits update branch; MERGE for supplied/preallocated keys; missing single generated keys targeting only the primary key use G36 INSERT RETURNING regardless of clause origin; reject non-primary targets needing generated-key output; validate the whole callback batch before writing, including assignments referencing columns absent from a row (design.md §5.3, R14) | G34 | SQL snapshots and G39 integration: insert/update/DoNothing, association ON CONFLICT, Save(slice), mixed-key routing; reject unsupported conditions/ON-column updates/non-primary generated-key requests before callback DML; no retry of race errors | ✅ |
+| G36 | Generated keys and basic RETURNING | Candidate IDENTITY threshold 4.2.1 awaits live validation; reject unknown/earlier versions before DDL; single INSERT RETURNING INTO + sql.Out populates models, batches per row; integrate G35 routing and populate association IDs before foreign-key/join-table writes; preallocate seq.NEXTVAL with autoIncrement:false; OracleMigrator sequence extensions (design.md §6) | G13, G32, G34, G35 | Simulation: no LastInsertId or replay; integration: IDENTITY/sequences/explicit keys, mixed IDs, new associations and FullSaveAssociations, Save(slice), foreign-key/join-table references, default transaction rollback and errors without default transactions | ✅ |
+| G37 | Oracle Migrator | Query ALL_TAB_COLUMNS/ALL_CONSTRAINTS/ALL_INDEXES/ALL_CATALOG; integrate G36 key DDL and validated version thresholds; reject IDENTITY on unknown/unsupported versions before DDL | G31, G32, G36 | Integration: full AutoMigrate workflow, including allowed/rejected key DDL paths | ✅ |
+| G38 | Oracle error translation | Mode-isolated ORA codes: 1→ErrDuplicatedKey, 2291/2292→ErrForeignKeyViolated | G30 | Unit tests | ✅ |
+| G39 | Oracle integration tests and documentation | OB_ORACLE_DSN: CRUD/migrations, identifier scanning, defaults/NULL, batch key output, limited MERGE; new belongs-to/has-one/has-many/many-to-many, mixed new/existing objects, FullSaveAssociations, Save(slice); NUMBER limits, Object prepared/text negative paths, Array storage limits; synchronize compile checks with G03 | G31–G38 | Live Oracle acceptance with version/pass/fail/skip; check foreign-key/join-table references, rejection/transaction boundaries; document that non-primary MERGE does not populate target IDs; verify IDENTITY threshold; simulation/skips are not passes | ◐ |
 
-## 5. M3：增强（可选项，按需排期）
+## 5. M3: enhancements (optional, scheduled as needed)
 
-| ID | 任务 | 内容要点 | 依赖 | 状态 |
+| ID | Task | Scope | Dependencies | Status |
 | --- | --- | --- | --- | --- |
-| G51 | 扩展 RETURNING INTO | 非主键数据库默认字段、通用 clause.Returning、Update/Delete 回填；基础 Create 主键回填已归 G36，不以本任务推迟 M2 主键能力 | G36, G39 | ☐ |
-| G52 | 扩展桥接 | WithPinnedConn 复用当前连接或从普通池借出，拒绝事务含 PrepareStmt 包装；事务内示例直接传原 sql.Tx；ExecBatch/LOB/游标/元数据按驱动签名使用；XA 单作用域且拒绝混用本地事务；验收回滚、单连接池、取消与所有权（design.md §8） | G14, G39 | ☐ |
-| G53 | 兼容性矩阵 | docs/compatibility.md：特性 × 模式 × OB/GORM 版本 × 验证状态；包含 M2 upsert 限制、IDENTITY 门槛证据、复杂类型和扩展事务边界 | G22, G39, G51, G52 | ☐ |
+| G51 | Extended RETURNING INTO | Non-primary database-default fields, generic clause.Returning, Update/Delete output; basic Create key output already belongs to G36 and must not be deferred from M2 | G36, G39 | ☐ |
+| G52 | Extension bridge | WithPinnedConn reuses current connections or borrows from plain pools, rejecting transactions including PrepareStmt wrappers; transaction examples pass original sql.Tx directly; follow driver signatures for ExecBatch/LOBs/cursors/metadata; single-scope XA rejects local transaction mixing; validate rollback, single-connection pools, cancellation, and ownership (design.md §8) | G14, G39 | ☐ |
+| G53 | Compatibility matrix | docs/compatibility.md: feature × mode × OB/GORM version × validation status; include M2 upsert limits, IDENTITY threshold evidence, complex types, and extension transaction boundaries | G22, G39, G51, G52 | ☐ |
 
 ---
 
-> M3 的 3 项任务计入总数，属于可选增强，不计入 M1/M2 交付承诺。
+> M3's three tasks count toward the total but are optional enhancements outside the M1/M2 delivery commitment.

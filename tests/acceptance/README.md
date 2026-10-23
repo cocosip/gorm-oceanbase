@@ -1,131 +1,150 @@
-# 真实租户验收程序
+# Live tenant acceptance tool
 
-`cmd/gorm-obtest` 是独立命令，通过本仓库的 GORM Dialector 连接 OceanBase。
-同一份 JSON 配置可选择 MySQL、Oracle 或依次执行全部目标。已有 `tests/integration`
-继续保留；此命令提供类型矩阵、字段元数据、独立对象清理和可保存的 JSON 报告。
+`cmd/gorm-obtest` is a standalone command that connects to OceanBase through this repository's GORM
+Dialector. One JSON configuration can select MySQL, Oracle, or all targets in sequence. The existing
+`tests/integration` suite remains available; this command adds a type matrix, field metadata,
+independent object cleanup, and JSON reports that can be saved.
 
-2026-10-23 已执行 OceanBase **4.4.2.2** 双模式真实验收；MySQL 本次全部适用用例通过，
-Oracle 尚未全部通过，详见下方实测结果。
+Live acceptance tests ran against OceanBase **4.4.2.2** in both modes on 2026-10-23. All applicable
+MySQL cases passed in that run; Oracle still had failures. See the live test results below.
 
-## 离线查看和检查
+## Offline inspection and validation
 
-在仓库根目录运行，无需环境变量，不建立连接：
+Run from the repository root. No environment variables or database connections are needed:
 
 ```powershell
 go run ./cmd/gorm-obtest -list
+
 go run ./cmd/gorm-obtest -config tests/acceptance/config.example.json -check
 go run ./cmd/gorm-obtest -config tests/acceptance/config.example.json -mode oracle -check
 go build -o bin/gorm-obtest.exe ./cmd/gorm-obtest
 ```
 
-## 连接配置与执行
+## Connection configuration and execution
 
-使用可创建表、索引、约束及 Oracle 序列/类型的测试 schema。程序创建随机前缀的测试对象，
-写入测试数据，并在每个用例结束后清理自己成功创建的对象；不清空业务表，不自动创建数据库。
-强制终止进程或断网可能留下对象，其名称记录在报告的 `objects` 中。
+Use a test schema with permission to create tables, indexes, constraints, and Oracle sequences/types.
+The tool creates test objects with random prefixes, writes test data, and cleans up objects it
+successfully created after each case. It does not truncate business tables or create databases.
+Forced termination or network loss can leave objects behind; their names appear in report `objects`.
 
-配置只引用环境变量名，不写入密码或 DSN。示例包含四个目标，分别测试两种模式下的
-普通 GORM 执行与 `PrepareStmt` 缓存执行。`prepare_stmt` 是 GORM 缓存开关，
-不等于底层驱动的客户端参数插值开关。OBJECT/集合需要底层服务器预处理路径。
-每个用例内保留缓存，结束时同步释放缓存语句，清理对象后再次释放，避免随机表名导致
-整套测试累计耗尽服务端预处理句柄；不调整服务器上限。
+Configuration references environment variable names only, without embedding passwords or DSNs.
+The example has four targets covering plain GORM execution and cached `PrepareStmt` execution in both
+modes. `prepare_stmt` controls GORM's statement cache; it is separate from the underlying driver's
+client-side parameter interpolation setting. OBJECT/collection values require server-side preparation.
+Statements remain cached within each case and are synchronously released at case completion, then
+released again after object cleanup. This prevents random table names from exhausting server prepared
+statement handles across the suite; the tool does not change server limits.
 
 ```powershell
 $env:OB_MYSQL_DSN = 'oceanbase://user:password@127.0.0.1:2881/test_db?mode=mysql'
 $env:OB_ORACLE_DSN = 'oceanbase://user:password@127.0.0.1:2881/TEST_SCHEMA?mode=oracle'
 
-# 连续执行配置中的所有目标
+# Run all configured targets in sequence.
 go run ./cmd/gorm-obtest -config tests/acceptance/config.example.json -report report-all.json
 
-# 只选择一种模式，或只选择一个目标
+# Select one mode or one target.
 go run ./cmd/gorm-obtest -config tests/acceptance/config.example.json -mode mysql -report report-mysql.json
 go run ./cmd/gorm-obtest -config tests/acceptance/config.example.json -target oracle -report report-oracle.json
 ```
 
-每次使用新的报告路径，程序拒绝覆盖已有文件。可以删除不需要的目标，或将 MySQL 目标的
-`mysql_profile` 改为 5（TIME 的小数按该档案截断），省略时使用 8；目标配置覆盖 DSN 的 MySQL 档案。
-Oracle 目标不能设置 MySQL 档案。明确的 DSN 模式必须与目标模式一致。为固定无时区时间的验收基准，程序使用 UTC 解析。
-未配置 DSN 会报配置错误，不会把整套真实测试标记为通过。
+Use a new report path each time; the tool refuses to overwrite an existing file. Remove unwanted
+targets or set a MySQL target's `mysql_profile` to 5 (which truncates TIME fractional seconds).
+Omitting it selects 8; target configuration overrides the DSN MySQL profile. Oracle targets must not
+set a MySQL profile. An explicit DSN mode must match the target mode. The tool parses times in UTC to
+provide a fixed baseline for values without time zones. A missing DSN is a configuration error,
+never a successful live test run.
 
-`timeout` 是用例预算，`cleanup_timeout` 是每个清理动作的独立预算；取消后仍尝试清理。
-连接建立和网络读取超时不会超过用例预算。`-check` 只校验 JSON 结构、模式、目标和用例名称，
-不读取 DSN 环境变量，也不验证租户权限、网络、凭据或服务器能力。
+`timeout` is the per-case budget; `cleanup_timeout` is a separate budget for each cleanup action.
+Cleanup is attempted even after cancellation. Connection and network read timeouts do not exceed
+the case budget. `-check` validates only JSON structure, modes, targets, and case names. It does not
+read DSN environment variables or validate tenant permissions, networking, credentials, or server capabilities.
 
-在配置中加入 `cases` 数组可以只运行指定用例，例如：
+Add a `cases` array to the configuration to run selected cases, for example:
 
 ```json
 "cases": ["types.uint64", "types.oracle_number", "schema.fields", "schema.migration"]
 ```
 
-## 覆盖内容
+## Coverage
 
-确切名称及适用模式以 `-list` 输出为准。当前包含 106 个独立用例：
+Use `-list` for exact names and applicable modes. There are currently 106 independent cases:
 
-| 范围 | 内容 |
+| Area | Coverage |
 | --- | --- |
-| Go 数值 | bool；int/int8/int16/int32/int64、uint/uint8/uint16/uint32/uint64；最小值、零、最大值；float32/float64 及大值 |
-| 精确小数 | DECIMAL/NUMBER(38,9)，使用 `types.Number`，避免 float64 丢失有效位 |
-| 字符串、二进制 | 普通/定长限制/长字符串、Unicode、SQL 空字符串差异；原始字节、限长字节、LOB 负载 |
-| NULL | Go 指针、sql.NullBool/Int16/Int32/Int64/Float64/String/Time，区分 NULL 和有效零值 |
-| 时间 | time.Time、秒/毫秒/微秒；DATE/DATETIME/TIMESTAMP、MySQL TIME/YEAR、Oracle TIMESTAMP(9)；TIME 使用字符串，含负数和超过 24 小时的时长 |
-| MySQL 专有类型 | CHAR、TEXT/MEDIUMTEXT/LONGTEXT、VARBINARY/BLOB、ENUM、SET、JSON |
-| Oracle 专有类型 | NUMBER、CHAR/NCHAR/NVARCHAR2、RAW/BLOB/CLOB/NCLOB、INTERVAL YM/DS、带时区/本地时区时间、ROWID、OBJECT 和集合列 |
-| 字段和元数据 | 实际数据库类型、长度、精度/小数位、可空性、默认值；记录 GORM 可报告的主键/自增/注释；NOT NULL、忽略字段和自定义/显式大小写列名 |
-| 迁移和约束 | 增量/重复 AutoMigrate、原数据保留、列改名/删除、复合主键、唯一复合索引及重命名/删除、外键、CHECK、MySQL 列注释 |
-| GORM 行为 | CRUD、显式/生成主键、批量和全默认值写入、map 与显式 NULL、零值更新、分页、Upsert/DoNothing、错误翻译、事务/保存点、Hook、时间戳、软删除、四类关联/Preload/Join/FullSaveAssociations、Oracle 序列 |
+| Go numeric types | bool; int/int8/int16/int32/int64 and uint/uint8/uint16/uint32/uint64; minimum, zero, and maximum values; float32/float64 and large values |
+| Exact decimals | DECIMAL/NUMBER(38,9) using `types.Number` to avoid float64 precision loss |
+| Strings and binary | Ordinary, length-limited, and long strings; Unicode; SQL empty-string differences; raw bytes, length-limited bytes, and LOB payloads |
+| NULL | Go pointers and sql.NullBool/Int16/Int32/Int64/Float64/String/Time, distinguishing NULL from valid zero values |
+| Time | time.Time; second/millisecond/microsecond precision; DATE/DATETIME/TIMESTAMP, MySQL TIME/YEAR, Oracle TIMESTAMP(9); string TIME values including negative durations and durations over 24 hours |
+| MySQL-specific types | CHAR, TEXT/MEDIUMTEXT/LONGTEXT, VARBINARY/BLOB, ENUM, SET, JSON |
+| Oracle-specific types | NUMBER, CHAR/NCHAR/NVARCHAR2, RAW/BLOB/CLOB/NCLOB, INTERVAL YM/DS, time zone/local time zone timestamps, ROWID, OBJECT, and collection columns |
+| Fields and metadata | Actual database type, length, precision/scale, nullability, defaults; primary key/auto-increment/comment metadata exposed by GORM; NOT NULL, ignored fields, and custom/explicit-case column names |
+| Migrations and constraints | Incremental/repeated AutoMigrate, existing data preservation, column rename/drop, composite primary keys, composite unique indexes and rename/drop, foreign keys, CHECK, MySQL column comments |
+| GORM behavior | CRUD, explicit/generated keys, batch/default-only inserts, maps and explicit NULL, zero-value updates, pagination, Upsert/DoNothing, error translation, transactions/savepoints, hooks, timestamps, soft deletion, four association types/Preload/Join/FullSaveAssociations, Oracle sequences |
 
-每个标量用例同时校验写入/读回值与 `ColumnTypes`；不是只检查建表成功。
-字段类型、可空性、显式长度和高精度小数元数据有独立断言。字段元数据缺少某项时，
-JSON 中省略该属性，表示 GORM 未提供，不能据此声称该项已验收。
-浮点测试使用可精确表示的普通值；不声称穷举所有浮点值或所有服务器 SQL 类型。
+Each scalar case verifies written/read-back values and `ColumnTypes`, beyond table creation alone.
+Field types, nullability, explicit lengths, and high-precision decimal metadata have separate assertions.
+Missing field metadata is omitted from JSON, meaning GORM did not provide it; it cannot be claimed as
+validated. Floating-point tests use ordinary, exactly representable values and do not claim exhaustive
+coverage of floating-point values or server SQL types.
 
-Oracle 空 VARCHAR2 视为 NULL；ROWID 从服务器读取，不能伪造。
-OBJECT 会创建真实命名类型并通过 GORM 字段读写。集合列需要服务器实际支持存储；
-不支持、权限不足、预处理/LOB/类型描述符错误一律保留失败，不自动降级或按历史结果跳过。
-PL/SQL 数组、游标、XA、空间类型和其他底层驱动专属接口不属于此 GORM 验收程序。
+Oracle treats empty VARCHAR2 values as NULL. ROWID values are read from the server, never fabricated.
+OBJECT cases create actual named types and read/write them through GORM fields. Collection columns
+require real server storage support. Unsupported features, insufficient permissions, and prepared
+statement/LOB/type descriptor errors remain failures, without automatic fallback or skips based on
+historical results. PL/SQL arrays, cursors, XA, spatial types, and other driver-specific APIs are outside
+this GORM acceptance tool's scope.
 
-## 报告与退出码
+## Reports and exit codes
 
-报告包含运行 ID、Go/平台、目标名、实际探测的服务器版本、配置的模式和执行方式、
-MySQL 档案、各用例耗时、字段/索引信息、创建对象、失败及清理错误。连接后读取真实租户兼容模式并核对配置。
-GORM SQL 日志关闭；报告不输出 DSN、密码、SQL 参数或未经处理的驱动错误消息，
-服务器错误保留错误码，用例名定位失败范围；标量用例还记录最后执行的步骤，区分建表、元数据、写入、读取和比较。
+Reports include the run ID, Go/platform, target name, probed server version, configured mode and
+execution method, MySQL profile, case durations, field/index metadata, created objects, failures,
+and cleanup errors. After connecting, the tool reads the actual tenant compatibility mode and checks
+it against the configuration. GORM SQL logging is disabled. Reports exclude DSNs, passwords, SQL
+parameters, and unprocessed driver error messages. Server errors retain their codes; case names locate
+the failure scope. Scalar cases also record the last step: table creation, metadata, write, read, or comparison.
 
-| 状态 | 含义 |
+| Status | Meaning |
 | --- | --- |
-| pass | 执行和断言通过，且对象清理未失败 |
-| fail | 连接、DDL、读写、断言、panic 或清理失败 |
-| skip | 因前置条件失败而未执行；不能计入通过 |
-| not_applicable | 用例属于另一种模式，明确不适用 |
+| pass | Execution and assertions passed, with no object cleanup failure |
+| fail | Connection, DDL, read/write, assertion, panic, or cleanup failure |
+| skip | Not executed because a prerequisite failed; does not count as a pass |
+| not_applicable | The case belongs to the other mode and is explicitly inapplicable |
 
-退出码：`0` 全部适用用例通过；`1` 存在失败；`2` 配置、参数或报告路径错误；
-`3` 无通过用例或存在跳过。使用 `go run` 时 Go 启动器可能将非零子进程状态统一返回为 1，
-CI 若依赖精确退出码应运行编译后的二进制。
+Exit codes: `0` means all applicable cases passed; `1` means failures occurred; `2` means a configuration,
+argument, or report path error; `3` means no cases passed or some cases were skipped. With `go run`,
+the Go launcher may map nonzero child exit codes to 1. CI requiring exact exit codes should use the
+compiled binary.
 
-报告中的通过数只证明该次目标/版本/配置，不等于其他版本或部署的完整兼容声明。
+Pass counts prove only the target/version/configuration tested in that run. They do not establish
+complete compatibility with other versions or deployments.
 
-## 2026-10-23 实测结果
+## 2026-10-23 live test results
 
-基准：OceanBase 4.4.2.2、`go-oceanbase v0.1.2`、GORM v1.31.2、
-Go 1.27.2、Windows amd64。主矩阵 run ID：`c211424018de`，补充矩阵：`b86cfeb78b1f`。
+Baseline: OceanBase 4.4.2.2, `go-oceanbase v0.1.2`, GORM v1.31.2, Go 1.27.2, Windows amd64.
+Main matrix run ID: `c211424018de`; supplemental matrix: `b86cfeb78b1f`.
 
-| 目标 | MySQL 档案 | pass | fail | skip | not_applicable |
+| Target | MySQL profile | pass | fail | skip | not_applicable |
 | --- | --- | --- | --- | --- | --- |
 | mysql | 8 | 87 | 0 | 0 | 19 |
 | mysql_prepared | 8 | 87 | 0 | 0 | 19 |
 | oracle | — | 86 | 4 | 0 | 16 |
 | oracle_prepared | — | 86 | 4 | 0 | 16 |
-| **主矩阵合计** | | **346** | **8** | **0** | **70** |
-| mysql_profile5（补充矩阵） | 5 | 87 | 0 | 0 | 19 |
-| mysql_prepared_profile5（补充矩阵） | 5 | 87 | 0 | 0 | 19 |
+| **Main matrix total** | | **346** | **8** | **0** | **70** |
+| mysql_profile5 (supplemental matrix) | 5 | 87 | 0 | 0 | 19 |
+| mysql_prepared_profile5 (supplemental matrix) | 5 | 87 | 0 | 0 | 19 |
 
-补充矩阵也运行全部 106 个用例，验证档案 5 的 TIME 小数截断、负时长、长时长及
-DATE/DATETIME/TIMESTAMP 读回。8 个主矩阵失败均保留，没有转成 skip 或忽略。
+The supplemental matrix also ran all 106 cases, checking profile 5 TIME fractional truncation,
+negative/long durations, and DATE/DATETIME/TIMESTAMP round trips. All eight main-matrix failures remain
+recorded; none were converted to skips or ignored.
 
-本轮修复 MySQL 空列批量 INSERT 丢行，并纠正验收程序的 TIME 类型、INTERVAL 正号比较及
-预处理缓存生命周期。最终矩阵无清理错误；初轮句柄耗尽遗留的两张自有表已按报告名称清理，
-独立对象清单核对无剩余。原有固定表名 `tests/integration` 本轮只做编译检查；
-表中通过数来自随机对象的独立验收程序，旧集成套件和单独驱动复现不计入该统计。
+That validation round fixed dropped rows in MySQL batch INSERTs with no columns, and corrected the
+tool's TIME types, INTERVAL positive-sign comparison, and prepared statement cache lifecycle.
+The final matrix had no cleanup errors. Two owned tables left by the initial handle-exhaustion run
+were removed using their report names; an independent object inventory found no remaining objects.
+The existing `tests/integration` suite, which uses fixed table names, was compile-checked only in that
+round. Counts above come from the standalone tool's random objects; the older integration suite and
+separate driver reproductions are excluded.
 
-本地完整 JSON 结果保存在忽略目录 `.cache/`：`live-v012-20261023.json`、
-`live-profile5-v012-20261023.json`，均不含连接凭据。
+Complete local JSON results are stored in the ignored `.cache/` directory as `live-v012-20261023.json`
+and `live-profile5-v012-20261023.json`. Neither contains connection credentials.

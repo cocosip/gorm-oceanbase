@@ -1,21 +1,25 @@
 # gorm-oceanbase
 
-[GORM](https://gorm.io) 的 OceanBase 数据库驱动，支持 **MySQL 兼容模式** 与 **Oracle 兼容模式**。底层使用
-[go-oceanbase](https://github.com/cocosip/go-oceanbase)（`database/sql` 驱动），一个 `Dialector` 通过 DSN 或配置选择模式。
+An OceanBase database driver for [GORM](https://gorm.io), supporting **MySQL compatibility mode** and
+**Oracle compatibility mode**. It uses [go-oceanbase](https://github.com/cocosip/go-oceanbase)
+(the `database/sql` driver), with a single `Dialector` selecting the mode through a DSN or configuration.
 
-> 2026-10-23 已实测 OceanBase 4.4.2.2：MySQL 档案 5/8 的普通和预处理目标均通过全部适用用例；
-> Oracle 尚未全部通过，详见 [实测统计](tests/acceptance/README.md#2026-10-23-实测结果)。
-> 支持范围以 [docs/development.md](docs/development.md) 的验收状态为准，未验收项不声明生产可用。
+> Tested against OceanBase 4.4.2.2 on 2026-10-23: all applicable cases passed for the plain and prepared
+> MySQL targets with profiles 5 and 8. Oracle still has failures; see the
+> [live test results](tests/acceptance/README.md#2026-10-23-live-test-results).
+> Supported scope follows the acceptance status in [docs/development.md](docs/development.md).
+> Features without acceptance validation are not claimed to be production-ready.
 
-## 安装
+## Installation
 
 ```bash
 go get github.com/cocosip/gorm-oceanbase
 ```
 
-开发基准为 `gorm.io/gorm` v1.31.2；更低 GORM 版本需通过版本矩阵验收后再声明支持。
+The development baseline is `gorm.io/gorm` v1.31.2. Support for earlier GORM versions requires a separate
+version matrix before it can be claimed.
 
-## 快速上手
+## Quick start
 
 ```go
 import (
@@ -26,7 +30,7 @@ import (
 db, err := gorm.Open(oceanbase.Open("oceanbase://user:pass@127.0.0.1:2881/db?mode=mysql"), &gorm.Config{})
 ```
 
-结构化配置（与 DSN 二选一）：
+Structured configuration (use either this or a DSN):
 
 ```go
 import ob "github.com/cocosip/go-oceanbase"
@@ -35,93 +39,114 @@ cfg, err := ob.ParseDSN("oceanbase://user:pass@127.0.0.1:2881/db")
 if err != nil {
     return err
 }
+
 db, err := gorm.Open(oceanbase.New(oceanbase.Config{
     DSNConfig: &cfg,
     Mode:      ob.ModeOracle,
 }), &gorm.Config{})
 ```
 
-`Open`/`New` 不建立连接，DSN 与配置错误由 `Initialize` 返回，因此可以安全地在配置阶段构造。
+`Open`/`New` do not connect to the database. `Initialize` returns DSN and configuration errors, so the
+Dialector can safely be constructed during application configuration.
 
-## 模式选择
+## Mode selection
 
-优先级如下，零值表示"未指定"：
+Precedence is as follows; a zero value means "unspecified":
 
 ```
-Config.Mode（非零） > DSN 显式 mode / DSNConfig 非零 Mode > 默认 MySQL
+Config.Mode (nonzero) > explicit DSN mode / nonzero DSNConfig.Mode > MySQL default
 ```
 
-- 需要自动探测租户兼容模式时使用 DSN 参数 `mode=auto`。探测在临时连接上读取
-  `ob_compatibility_mode`，只接受非 NULL 的 `MYSQL`/`ORACLE`；未知值、NULL、超时与权限错误都返回初始化错误。
-- 一个 GORM `DB` 实例只能对应一种兼容模式；不支持混用模式的租户。
-- 外部 `Conn` 不参与探测，必须显式给出具体 `Mode`。
+- Use the DSN parameter `mode=auto` to detect the tenant compatibility mode. Detection reads
+  `ob_compatibility_mode` on a temporary connection and accepts only non-NULL `MYSQL`/`ORACLE` values.
+  Unknown values, NULL, timeouts, and permission errors all cause initialization to fail.
+- A GORM `DB` instance uses exactly one compatibility mode; tenants with mixed modes are unsupported.
+- An external `Conn` is not probed and requires an explicit, concrete `Mode`.
 
-## 时间与 MySQL 档案
+## Time handling and MySQL profiles
 
-- **内部连接**（DSN / DSNConfig）：驱动 `Session.ParseTime` 会被强制开启，GORM 的普通
-  `time.Time`/`*time.Time` 字段才能正确扫描。DSN 显式写 `parseTime=false` 会返回配置错误，不会被静默改写。
-- **外部连接**（`Config.Conn`）：调用者自行保证 `ParseTime=true`，本驱动不修改也不关闭该连接池。
-  连接池所有权始终归调用者；初始化失败时驱动也不会关闭它。
-- **MySQL 档案**：`CompatibleMysqlVersion` 取值范围 5 / 8，决定 MySQL 客户端结果与转换语义。
-  优先级为 `Config.CompatibleMysqlVersion` > DSN 显式 `compatibleMysqlVersion` > `DSNConfig` 非零值 > 默认 **8**。
-  档案 5 会截去 TIME 结果的小数，DATETIME/TIMESTAMP 的行为需按档案分别验证。
-- Oracle 模式不注入 MySQL 档案。
-- MySQL `TIME` 是可为负数、可超过 24 小时的时长，使用 `string` 字段和显式 `type:time(6)`；
-  即使开启 ParseTime，底层驱动也按字符串返回，不能当作普通日期的 `time.Time` 使用。
+- **Internal connections** (DSN / DSNConfig): the driver enables `Session.ParseTime` so ordinary GORM
+  `time.Time`/`*time.Time` fields can be scanned correctly. An explicit DSN `parseTime=false` causes a
+  configuration error rather than being silently rewritten.
+- **External connections** (`Config.Conn`): callers must ensure `ParseTime=true`. This driver neither
+  modifies nor closes the pool. Ownership remains with the caller, including when initialization fails.
+- **MySQL profiles**: `CompatibleMysqlVersion` accepts 5 or 8 and controls MySQL client result and
+  conversion semantics. Precedence is `Config.CompatibleMysqlVersion` > explicit DSN
+  `compatibleMysqlVersion` > nonzero `DSNConfig` value > default **8**. Profile 5 truncates fractional
+  seconds in TIME results; DATETIME/TIMESTAMP behavior must be verified separately for each profile.
+- Oracle mode does not inject a MySQL profile.
+- MySQL `TIME` is a duration that can be negative or exceed 24 hours. Use a `string` field with an
+  explicit `type:time(6)` tag. The underlying driver returns strings even with ParseTime enabled;
+  these values cannot be treated as ordinary dates in `time.Time`.
 
-## 字符串与时间类型默认值
+## String and time type defaults
 
-对齐 `gorm.io/driver/mysql` v1.6 的行为（MySQL 模式）：
+MySQL mode follows `gorm.io/driver/mysql` v1.6:
 
-- 普通 `string` 字段未指定 `size` 时为 `longtext`；主键、带默认值或带 `INDEX`/`UNIQUE`/`UNIQUEINDEX` tag 的字段为
-  `varchar(191)`（utf8mb4 索引长度）；设置 `Config.DefaultStringSize` 后统一使用该长度。
-- 长度 65536 至 2²⁴ 使用 `mediumtext`，更长为 `longtext`，其余正长度使用 `varchar(n)`。
-- `datetime` 默认精度 3（毫秒），可用 `DefaultDatetimePrecision` 调整或 `DisableDatetimePrecision` 关闭。
-- 默认 `NowFunc` 按最终模式安装：MySQL 毫秒截断；Oracle 微秒截断。用户自定义的 `NowFunc` 不会被覆盖。
+- An ordinary `string` field without `size` uses `longtext`. Primary keys, fields with defaults, and
+  fields with `INDEX`/`UNIQUE`/`UNIQUEINDEX` tags use `varchar(191)` (for utf8mb4 index length).
+  Setting `Config.DefaultStringSize` supplies a common default length.
+- Lengths from 65536 through 2²⁴ use `mediumtext`; larger lengths use `longtext`; other positive lengths
+  use `varchar(n)`.
+- `datetime` defaults to precision 3 (milliseconds). Adjust it with `DefaultDatetimePrecision` or
+  disable it with `DisableDatetimePrecision`.
+- The default `NowFunc` is installed after mode resolution: millisecond truncation for MySQL and
+  microsecond truncation for Oracle. A caller-supplied `NowFunc` is preserved.
 
-## Oracle 兼容模式
+## Oracle compatibility mode
 
-- **标识符**：所有未加引号的标识符按大写处理（对齐 OB Oracle 折叠规则）；`gorm:"column:\"Foo\""`
-  等自带引号的显式大小写名称原样保留。查询时将物理列名映射回模型 DBName，支持自定义列名、显式大小写和关联查询；调用者的 `MapColumns` 优先。
-  `Raw(...).Scan(...)` 未指定模型时，请通过 SQL 别名或 `MapColumns` 指定自定义列映射。
-- **锁**：Oracle 没有 `FOR SHARE` 共享锁读语法，`clause.Locking{Strength: "SHARE"}` 会退化为
-  `FOR UPDATE`（锁语义从共享变为排他）；`UPDATE` 强度与 `NOWAIT`/`SKIP LOCKED` 选项原样输出。
-- **类型映射**：`Bool→NUMBER(1)`；`Int/Uint→NUMBER(p,0)`（int64→19、uint64→20）；`Float→NUMBER(p,s)/
-  BINARY_FLOAT/BINARY_DOUBLE`；`String→VARCHAR2(默认 512，超过 4000 转 CLOB)`；`Time→TIMESTAMP(默认 6，
-  带时区变体经显式 type tag 指定)`；`Bytes→RAW(≤2000)/BLOB`。`types.Object/Array` 无法从 Go 类型推断，
-  必须显式 `gorm:"type:真实类型名"`，读取需要服务器预处理路径。
-- **生成主键**：自增字段建表为 `NUMBER(p,0) GENERATED BY DEFAULT AS IDENTITY`（`BY DEFAULT`，显式 NULL
-  不会自动编号）。IDENTITY 的最低版本门槛为候选 4.2.1，未知或更低版本在建表 DDL 执行前返回
-  `ErrIdentityUnsupported`，请改用显式主键或序列（`OracleSequenceMigrator.CreateSequence/HasSequence`，
-  配合事务内 `SELECT my_seq.NEXTVAL FROM dual` 取号）。插入省略零值主键，经 `INSERT ... RETURNING ...
-  INTO ?` 取回并回填模型；批量逐条获取，绝不推算连续 ID，也不使用 `LastInsertId`。
-- **Upsert（MERGE）**：`clause.OnConflict` 编译为 `MERGE INTO ... USING (SELECT ? ... FROM dual)`。冲突
-  目标取显式 `Columns` 或模型完整主键；非主键目标执行前查询数据库唯一索引，必须匹配完整唯一键
-  （DryRun 依据模型 `unique`/`uniqueIndex` 声明，无模型时无法证明唯一性则拒绝）；`UpdateAll` 排除 ON 列；修改 ON 列、条件形态（`Where`/
-  `TargetWhere`/`OnConstraint`）一律在执行前返回 `ErrUpsertUnsupported`，不会静默丢弃语义。按非主键唯一列
-  匹配且仍需生成主键的 upsert 被拒绝（先取号）；按非主键匹配的 MERGE 不回填已有行的主键。
-  同一回调的整批先校验后执行；发生唯一冲突按错误翻译返回，不自动重试。
+- **Identifiers**: unquoted identifiers are uppercased to match OB Oracle folding rules. Explicitly
+  quoted names such as `gorm:"column:\"Foo\""` retain their case. Query result columns are mapped back
+  to model DBName values, including custom names, explicit case, and joins; caller `MapColumns`
+  mappings take precedence. For `Raw(...).Scan(...)` without a model, use SQL aliases or `MapColumns`
+  for custom column mappings.
+- **Locks**: Oracle has no `FOR SHARE` syntax. `clause.Locking{Strength: "SHARE"}` becomes `FOR UPDATE`,
+  changing the lock from shared to exclusive. `UPDATE` strength and `NOWAIT`/`SKIP LOCKED` options are
+  emitted unchanged.
+- **Type mappings**: `Bool` → `NUMBER(1)`; `Int/Uint` → `NUMBER(p,0)` (int64: 19, uint64: 20);
+  `Float` → `NUMBER(p,s)` / `BINARY_FLOAT` / `BINARY_DOUBLE`; `String` → `VARCHAR2` (default 512,
+  `CLOB` above 4000); `Time` → `TIMESTAMP` (default precision 6, with explicit type tags for time zone
+  variants); `Bytes` → `RAW` (≤2000) / `BLOB`. `types.Object/Array` cannot be inferred from Go types:
+  an explicit `gorm:"type:ACTUAL_TYPE_NAME"` tag and server-prepared reads are required.
+- **Generated primary keys**: auto-increment fields use `NUMBER(p,0) GENERATED BY DEFAULT AS IDENTITY`.
+  `BY DEFAULT` does not generate an ID for explicit NULL. The candidate minimum IDENTITY version is
+  4.2.1; unknown or earlier versions return `ErrIdentityUnsupported` before table DDL. Use explicit
+  keys or sequences instead (`OracleSequenceMigrator.CreateSequence/HasSequence`, with
+  `SELECT my_seq.NEXTVAL FROM dual` inside a transaction). Inserts omit zero-valued keys and retrieve
+  them through `INSERT ... RETURNING ... INTO ?` to populate the model. Batch IDs are retrieved one
+  row at a time; contiguous IDs are never inferred and `LastInsertId` is not used.
+- **Upsert (MERGE)**: `clause.OnConflict` becomes `MERGE INTO ... USING (SELECT ? ... FROM dual)`.
+  The conflict target is explicit `Columns` or the model's complete primary key. Non-primary-key
+  targets are checked against database unique indexes before execution and must match a complete
+  unique key. DryRun uses model `unique`/`uniqueIndex` declarations and rejects targets whose
+  uniqueness cannot be proved without a model. `UpdateAll` excludes ON columns. Updates to ON columns
+  and conditional forms (`Where`/`TargetWhere`/`OnConstraint`) return `ErrUpsertUnsupported` before
+  execution without silently discarding semantics. Upserts matching a non-primary unique key while
+  still requiring a generated primary key are rejected; preallocate the key first. MERGE on a
+  non-primary target does not populate the existing row's primary key. Each callback validates its
+  entire batch before execution. Unique conflicts use error translation, with no automatic retry.
 
-## 错误翻译
+## Error translation
 
-配合 `gorm.Config{TranslateError: true}`，把驱动 `*dberrors.Error` 的服务器错误码映射为 GORM 错误；
-两张码表按固化模式隔离：
+With `gorm.Config{TranslateError: true}`, server codes from driver `*dberrors.Error` values are mapped
+to GORM errors. The two code tables are isolated by the resolved mode:
 
-| 模式 | 错误码 | GORM 错误 |
+| Mode | Error codes | GORM error |
 | --- | --- | --- |
 | MySQL | 1062 | `gorm.ErrDuplicatedKey` |
 | MySQL | 1451 / 1452 | `gorm.ErrForeignKeyViolated` |
-| Oracle | ORA-00001 | `gorm.ErrDuplicatedKey` |
-| Oracle | ORA-02291 / ORA-02292 | `gorm.ErrForeignKeyViolated` |
+| Oracle | 1 (ORA-00001) | `gorm.ErrDuplicatedKey` |
+| Oracle | 2291 / 2292 | `gorm.ErrForeignKeyViolated` |
 
-未命中的错误原样返回，不做模糊匹配。
+Unmatched errors are returned unchanged; no fuzzy matching is used.
 
-## 文档
+## Documentation
 
-- [真实租户验收程序](tests/acceptance/README.md)：`cmd/gorm-obtest`，通过配置切换 MySQL/Oracle，覆盖类型、字段元数据、迁移和 GORM 行为；含实测统计
-- [设计方案](docs/design.md)：架构、配置、双模式行为、错误翻译与测试策略
-- [开发计划与进度](docs/development.md)：任务分解、依赖与验收状态
+- [Live tenant acceptance tool](tests/acceptance/README.md): `cmd/gorm-obtest`, with configurable
+  MySQL/Oracle targets, type coverage, field metadata, migrations, GORM behavior, and live test counts
+- [Design](docs/design.md): architecture, configuration, dual-mode behavior, error translation, and test strategy
+- [Development plan and progress](docs/development.md): tasks, dependencies, and acceptance status
 
-## 许可证
+## License
 
-MIT，见 [LICENSE](LICENSE)。
+MIT. See [LICENSE](LICENSE).
