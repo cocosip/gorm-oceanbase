@@ -156,11 +156,10 @@ func TestMySQLDatetimePrecisionRoundTrip(t *testing.T) {
 	}
 }
 
-// mysqlTimeSlot uses a TIME column; the fraction of the scanned time.Time
-// differs between MySQL client profiles (design.md §4.2, R6).
+// TIME is a signed duration string, including under ParseTime=true.
 type mysqlTimeSlot struct {
-	ID    uint      `gorm:"primaryKey"`
-	Start time.Time `gorm:"type:time(3)"`
+	ID    uint   `gorm:"primaryKey"`
+	Start string `gorm:"type:time(3)"`
 }
 
 func TestMySQLTimeFractionProfileDiff(t *testing.T) {
@@ -188,8 +187,8 @@ func TestMySQLTimeFractionProfileDiff(t *testing.T) {
 	if err := db8.First(&slot8).Error; err != nil {
 		t.Fatalf("First (profile 8): %v", err)
 	}
-	if slot8.Start.Nanosecond() != 123*int(time.Millisecond) {
-		t.Fatalf("profile 8 nanos = %d, want 123000000 (fraction kept)", slot8.Start.Nanosecond())
+	if slot8.Start != "12:30:45.123" {
+		t.Fatalf("profile 8 TIME = %q, want 12:30:45.123", slot8.Start)
 	}
 
 	db5 := openMySQLProfile(t, 5)
@@ -197,8 +196,8 @@ func TestMySQLTimeFractionProfileDiff(t *testing.T) {
 	if err := db5.First(&slot5).Error; err != nil {
 		t.Fatalf("First (profile 5): %v", err)
 	}
-	if slot5.Start.Nanosecond() != 0 {
-		t.Fatalf("profile 5 nanos = %d, want 0 (fraction truncated)", slot5.Start.Nanosecond())
+	if slot5.Start != "12:30:45" {
+		t.Fatalf("profile 5 TIME = %q, want 12:30:45", slot5.Start)
 	}
 }
 

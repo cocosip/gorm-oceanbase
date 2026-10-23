@@ -3,7 +3,8 @@
 [GORM](https://gorm.io) 的 OceanBase 数据库驱动，支持 **MySQL 兼容模式** 与 **Oracle 兼容模式**。底层使用
 [go-oceanbase](https://github.com/cocosip/go-oceanbase)（`database/sql` 驱动），一个 `Dialector` 通过 DSN 或配置选择模式。
 
-> 当前进度：M1（MySQL 模式）与 M2（Oracle 模式）代码及无库单测完成，真实租户集成验收尚未执行。
+> 2026-10-23 已实测 OceanBase 4.4.2.2：MySQL 档案 5/8 的普通和预处理目标均通过全部适用用例；
+> Oracle 仍有 [基础驱动问题及服务端限制](tests/acceptance/driver-issues.md)，详见 [实测统计](tests/acceptance/README.md#2026-10-23-实测结果)。
 > 支持范围以 [docs/development.md](docs/development.md) 的验收状态为准，未验收项不声明生产可用。
 
 ## 安装
@@ -65,6 +66,8 @@ Config.Mode（非零） > DSN 显式 mode / DSNConfig 非零 Mode > 默认 MySQL
   优先级为 `Config.CompatibleMysqlVersion` > DSN 显式 `compatibleMysqlVersion` > `DSNConfig` 非零值 > 默认 **8**。
   档案 5 会截去 TIME 结果的小数，DATETIME/TIMESTAMP 的行为需按档案分别验证。
 - Oracle 模式不注入 MySQL 档案。
+- MySQL `TIME` 是可为负数、可超过 24 小时的时长，使用 `string` 字段和显式 `type:time(6)`；
+  即使开启 ParseTime，底层驱动也按字符串返回，不能当作普通日期的 `time.Time` 使用。
 
 ## 字符串与时间类型默认值
 
@@ -115,7 +118,7 @@ Config.Mode（非零） > DSN 显式 mode / DSNConfig 非零 Mode > 默认 MySQL
 
 ## 文档
 
-- [真实租户验收程序](tests/acceptance/README.md)：`cmd/gorm-obtest`，通过配置切换 MySQL/Oracle，覆盖类型、字段元数据、迁移和 GORM 行为；提供离线 `-list` / `-check`，尚未连接真实租户验收
+- [真实租户验收程序](tests/acceptance/README.md)：`cmd/gorm-obtest`，通过配置切换 MySQL/Oracle，覆盖类型、字段元数据、迁移和 GORM 行为；含实测统计及驱动问题复现
 - [设计方案](docs/design.md)：架构、配置、双模式行为、错误翻译与测试策略
 - [开发计划与进度](docs/development.md)：任务分解、依赖与验收状态
 

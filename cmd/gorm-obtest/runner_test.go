@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"database/sql"
+	"database/sql/driver"
 	"errors"
 	"os"
 	"path/filepath"
@@ -16,6 +17,58 @@ import (
 	oceanbase "github.com/cocosip/gorm-oceanbase"
 	"gorm.io/gorm"
 )
+
+type statementCounter struct{ opened, closed int }
+type statementConnector struct{ counter *statementCounter }
+
+func (c statementConnector) Driver() driver.Driver { return nil }
+func (c statementConnector) Connect(context.Context) (driver.Conn, error) {
+	return statementConnection(c), nil
+}
+
+type statementConnection struct{ counter *statementCounter }
+
+func (c statementConnection) Prepare(string) (driver.Stmt, error) {
+	c.counter.opened++
+	return countedStatement(c), nil
+}
+func (statementConnection) Close() error              { return nil }
+func (statementConnection) Begin() (driver.Tx, error) { return nil, errors.New("transaction not used") }
+
+type countedStatement struct{ counter *statementCounter }
+
+func (s countedStatement) Close() error { s.counter.closed++; return nil }
+func (countedStatement) NumInput() int  { return -1 }
+func (countedStatement) Exec([]driver.Value) (driver.Result, error) {
+	return driver.RowsAffected(1), nil
+}
+func (countedStatement) Query([]driver.Value) (driver.Rows, error) {
+	return nil, errors.New("query not used")
+}
+
+func TestPreparedStatementsReleasedBeforeAndAfterCleanup(t *testing.T) {
+	counter := &statementCounter{}
+	pool := sql.OpenDB(statementConnector{counter})
+	defer func() { _ = pool.Close() }()
+	prepared := gorm.NewPreparedStmtDB(pool, 0, 0)
+	base := &gorm.DB{Config: &gorm.Config{ConnPool: prepared}}
+	base.Statement = &gorm.Statement{DB: base, ConnPool: prepared, Context: context.Background()}
+	s := &scenario{base: base, cleanupTimeout: time.Second}
+	s.cleanups = append(s.cleanups, cleanupAction{name: "test", run: func(*gorm.DB) error {
+		if len(prepared.Stmts.Keys()) != 0 {
+			return checkFailure("previous case statements retained during cleanup")
+		}
+		_, err := prepared.ExecContext(context.Background(), "DROP TABLE owned")
+		return err
+	}})
+	result := runScenario(s, func(*scenario) error {
+		_, err := prepared.ExecContext(context.Background(), "INSERT INTO owned VALUES (1)")
+		return err
+	})
+	if result.Status != statusPass || counter.opened != 2 || counter.closed != 2 || len(prepared.Stmts.Keys()) != 0 {
+		t.Fatalf("result=%+v opened=%d closed=%d", result, counter.opened, counter.closed)
+	}
+}
 
 type metadataFailurePool struct{ gorm.ConnPool }
 

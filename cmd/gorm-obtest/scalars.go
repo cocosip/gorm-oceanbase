@@ -70,7 +70,7 @@ func scalarFields() []scalarField {
 		scalar("mysql_date", modeMySQL, "type:date", stamp.Truncate(24*time.Hour)),
 		scalar("mysql_datetime", modeMySQL, "type:datetime(6)", stamp),
 		scalar("mysql_timestamp", modeMySQL, "type:timestamp(6)", stamp),
-		scalar("mysql_time", modeMySQL, "type:time(6)", time.Date(1970, 1, 1, 12, 30, 45, 123456000, time.UTC), time.Date(1970, 1, 1, 23, 59, 59, 999999000, time.UTC)),
+		scalar("mysql_time", modeMySQL, "type:time(6)", "12:30:45.123456", "23:59:59.999999", "-25:00:00.123456", "838:59:58.999999"),
 		scalar("mysql_year", modeMySQL, "type:year", int16(1970), int16(2024)),
 		scalar("mysql_char", modeMySQL, "type:char(8)", "ascii"),
 		scalar("mysql_text", modeMySQL, "type:text", unicodeSample, strings.Repeat("t", 10000)),
@@ -106,8 +106,6 @@ func scalarFields() []scalarField {
 			fields[i].compare = equalTimestampTZ
 		case "oracle_timestamp_ltz":
 			fields[i].compare = equalTimestampLTZ
-		case "mysql_time":
-			fields[i].compare = equalClock
 		case "oracle_interval_ym", "oracle_interval_ds":
 			fields[i].compare = equalInterval
 		}
@@ -119,19 +117,13 @@ var intervalNumbers = regexp.MustCompile(`[0-9]+(?:\.[0-9]+)?`)
 
 func equalInterval(want, got any) bool {
 	normalize := func(value any) string {
-		return intervalNumbers.ReplaceAllStringFunc(fmt.Sprint(value), func(part string) string {
+		return intervalNumbers.ReplaceAllStringFunc(strings.TrimPrefix(fmt.Sprint(value), "+"), func(part string) string {
 			n, _ := new(big.Rat).SetString(part)
 			return n.RatString()
 		})
 	}
 	// Driver Scanner/Valuer validates the syntax; padding and fraction scale can change on read.
 	return reflect.TypeOf(want) == reflect.TypeOf(got) && normalize(want) == normalize(got)
-}
-
-func equalClock(want, got any) bool {
-	w, wok := want.(time.Time)
-	g, gok := got.(time.Time)
-	return wok && gok && w.Hour() == g.Hour() && w.Minute() == g.Minute() && w.Second() == g.Second() && w.Nanosecond() == g.Nanosecond()
 }
 
 func (f scalarField) modelType(nullable bool) reflect.Type {
@@ -208,7 +200,7 @@ func scalarCase(f scalarField, nullable bool) caseDefinition {
 				compare = equalScalar
 			}
 			if f.name == "mysql_time" && s.mysqlProfile == 5 {
-				value = value.(time.Time).Truncate(time.Second)
+				value, _, _ = strings.Cut(value.(string), ".")
 			}
 			s.stage = fmt.Sprintf("compare_row_%d", i+1)
 			if !compare(value, actual.Interface()) {

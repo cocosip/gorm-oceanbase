@@ -6,7 +6,6 @@ import (
 	"strings"
 	"sync"
 	"testing"
-	"time"
 
 	ob "github.com/cocosip/go-oceanbase"
 	obtypes "github.com/cocosip/go-oceanbase/types"
@@ -20,6 +19,8 @@ func TestIntervalComparisonUsesExactValue(t *testing.T) {
 		want, got any
 		equal     bool
 	}{
+		{obtypes.IntervalYM("+0123-04"), obtypes.IntervalYM("0123-04"), true},
+		{obtypes.IntervalDS("+0012 03:04:05.123456789"), obtypes.IntervalDS("0012 03:04:05.123456789"), true},
 		{obtypes.IntervalYM("+0123-04"), obtypes.IntervalYM("+123-04"), true},
 		{obtypes.IntervalYM("+0123-04"), obtypes.IntervalYM("-123-04"), false},
 		{obtypes.IntervalDS("+0012 03:04:05.123456789"), obtypes.IntervalDS("+12 03:04:05.123456789"), true},
@@ -32,10 +33,11 @@ func TestIntervalComparisonUsesExactValue(t *testing.T) {
 	}
 }
 
-func TestClockComparisonPreservesFractionAndIgnoresDate(t *testing.T) {
-	want := time.Date(1970, 1, 1, 12, 30, 45, 123456000, time.UTC)
-	if !equalClock(want, want.AddDate(20, 0, 0)) || equalClock(want, want.Add(time.Nanosecond)) {
-		t.Fatal("TIME comparison changed clock semantics")
+func TestMySQLTimeUsesDurationText(t *testing.T) {
+	for _, field := range scalarFields() {
+		if field.name == "mysql_time" && field.typ != reflect.TypeFor[string]() {
+			t.Fatal("TIME requires duration text, not a date-based time.Time")
+		}
 	}
 }
 

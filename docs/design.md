@@ -19,7 +19,7 @@
 | DSN 风格 | URL 形式 `oceanbase://user:pass@host:2881/db?mode=mysql`，未知参数直接报错；`ParseDSN` 同时应用驱动默认值 | 使用驱动解析器；在解析前记录显式参数，再施加 GORM 默认策略，不自造 DSN 格式 |
 | 双模式 | `ModeMySQL` / `ModeOracle` / `ModeAuto`；Connector 在首条连接成功初始化后固定模式，后续连接不得混用模式 | 默认 MySQL；显式 `mode=auto` 时用已有 `SessionVariable(ctx, conn, "ob_compatibility_mode")` 读取并校验实际模式（见 §4.1） |
 | MySQL 兼容档案（v0.1.1+） | `Session.CompatibleMysqlVersion`（DSN `compatibleMysqlVersion`）选择 MySQL 5/8 客户端语义；**驱动默认 5，档案 5 截去 TIME 结果的小数，不是所有 DATETIME/TIMESTAMP 小数** | GORM MySQL 模式默认注入 **8**，保留 TIME 小数并采用对应元数据语义；Config/DSN 显式指定时尊重用户 |
-| 时间读取 | `Session.ParseTime` 默认 false；普通日期/时间戳此时返回字符串，不能直接扫描到 GORM 的 `time.Time` 字段 | 内部连接统一开启 ParseTime；外部连接由调用者开启，带时区类型另见 §5.2 |
+| 时间读取 | `Session.ParseTime` 默认 false；普通日期/时间戳此时返回字符串，不能直接扫描到 GORM 的 `time.Time` 字段；MySQL TIME 始终是时长字符串 | 内部连接统一开启 ParseTime；外部连接由调用者开启；TIME 使用 string 字段，带时区类型另见 §5.2 |
 | 版本解析（v0.1.1+） | 驱动内部解析已识别 "OceanBase" 标记、取其后版本为真实 OB 版本（internal/configspec，**未导出**） | GORM 侧 version.go 采用相同策略；按模式查询真实 OB 版本（见 R1） |
 | 参数绑定 | 两种模式都支持位置参数 `?`（Oracle 另支持命名参数） | `BindVarTo` 统一写 `?`，无需 Oracle 的 `:1` |
 | 错误 | `*dberrors.Error{Code, SQLState, Message}`，保留服务器原始错误码与 SQLSTATE | `ErrorTranslator` 直接按 Code 映射（见 §7） |

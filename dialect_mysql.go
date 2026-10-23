@@ -133,6 +133,9 @@ func buildOnDuplicateKeyUpdate(c clause.Clause, builder clause.Builder) {
 func buildEmptyValues(c clause.Clause, builder clause.Builder) {
 	if values, ok := c.Expression.(clause.Values); ok && len(values.Columns) == 0 {
 		writeString(builder, "VALUES()")
+		for i := 1; i < len(values.Values); i++ {
+			writeString(builder, ",()")
+		}
 		return
 	}
 	c.Build(builder)

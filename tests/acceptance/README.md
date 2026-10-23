@@ -4,7 +4,8 @@
 同一份 JSON 配置可选择 MySQL、Oracle 或依次执行全部目标。已有 `tests/integration`
 继续保留；此命令提供类型矩阵、字段元数据、独立对象清理和可保存的 JSON 报告。
 
-本轮仅完成离线开发和检查，**尚未执行真实数据库验收**。
+2026-10-23 已执行 OceanBase **4.4.2.2** 双模式真实验收；MySQL 本次全部适用用例通过，
+Oracle 仍有驱动问题和服务端限制，详见下方实测结果及[驱动交接](driver-issues.md)。
 
 ## 离线查看和检查
 
@@ -26,6 +27,8 @@ go build -o bin/gorm-obtest.exe ./cmd/gorm-obtest
 配置只引用环境变量名，不写入密码或 DSN。示例包含四个目标，分别测试两种模式下的
 普通 GORM 执行与 `PrepareStmt` 缓存执行。`prepare_stmt` 是 GORM 缓存开关，
 不等于底层驱动的客户端参数插值开关。OBJECT/集合需要底层服务器预处理路径。
+每个用例内保留缓存，结束时同步释放缓存语句，清理对象后再次释放，避免随机表名导致
+整套测试累计耗尽服务端预处理句柄；不调整服务器上限。
 
 ```powershell
 $env:OB_MYSQL_DSN = 'oceanbase://user:password@127.0.0.1:2881/test_db?mode=mysql'
@@ -64,7 +67,7 @@ Oracle 目标不能设置 MySQL 档案。明确的 DSN 模式必须与目标模�
 | 精确小数 | DECIMAL/NUMBER(38,9)，使用 `types.Number`，避免 float64 丢失有效位 |
 | 字符串、二进制 | 普通/定长限制/长字符串、Unicode、SQL 空字符串差异；原始字节、限长字节、LOB 负载 |
 | NULL | Go 指针、sql.NullBool/Int16/Int32/Int64/Float64/String/Time，区分 NULL 和有效零值 |
-| 时间 | time.Time、秒/毫秒/微秒；DATE/DATETIME/TIMESTAMP、MySQL TIME/YEAR、Oracle TIMESTAMP(9) |
+| 时间 | time.Time、秒/毫秒/微秒；DATE/DATETIME/TIMESTAMP、MySQL TIME/YEAR、Oracle TIMESTAMP(9)；TIME 使用字符串，含负数和超过 24 小时的时长 |
 | MySQL 专有类型 | CHAR、TEXT/MEDIUMTEXT/LONGTEXT、VARBINARY/BLOB、ENUM、SET、JSON |
 | Oracle 专有类型 | NUMBER、CHAR/NCHAR/NVARCHAR2、RAW/BLOB/CLOB/NCLOB、INTERVAL YM/DS、带时区/本地时区时间、ROWID、OBJECT 和集合列 |
 | 字段和元数据 | 实际数据库类型、长度、精度/小数位、可空性、默认值；记录 GORM 可报告的主键/自增/注释；NOT NULL、忽略字段和自定义/显式大小写列名 |
@@ -100,3 +103,33 @@ GORM SQL 日志关闭；报告不输出 DSN、密码、SQL 参数或未经处理
 CI 若依赖精确退出码应运行编译后的二进制。
 
 报告中的通过数只证明该次目标/版本/配置，不等于其他版本或部署的完整兼容声明。
+
+## 2026-10-23 实测结果
+
+基准：OceanBase 4.4.2.2、`go-oceanbase v0.1.1`、GORM v1.31.2、
+Go 1.27.2、Windows amd64。主矩阵 run ID：`2d366acec44f`，补充矩阵：`99783ab2c330`。
+
+| 目标 | MySQL 档案 | pass | fail | skip | not_applicable |
+| --- | --- | --- | --- | --- | --- |
+| mysql | 8 | 87 | 0 | 0 | 19 |
+| mysql_prepared | 8 | 87 | 0 | 0 | 19 |
+| oracle | — | 83 | 7 | 0 | 16 |
+| oracle_prepared | — | 79 | 11 | 0 | 16 |
+| **主矩阵合计** | | **336** | **18** | **0** | **70** |
+| mysql_profile5（补充矩阵） | 5 | 87 | 0 | 0 | 19 |
+| mysql_prepared_profile5（补充矩阵） | 5 | 87 | 0 | 0 | 19 |
+
+补充矩阵也运行全部 106 个用例，验证档案 5 的 TIME 小数截断、负时长、长时长及
+DATE/DATETIME/TIMESTAMP 读回。18 个主矩阵失败均保留，没有转成 skip 或忽略：
+其中驱动问题 10 项（BLOB 6 项、独立 PREPARE RETURNING 4 项），同租户 Connector/J
+对照确认的具体服务端限制 8 项（浮点极值 4 项、NCLOB 2 项、集合列 2 项）。
+完整错误与独立复现见[驱动交接](driver-issues.md)。
+
+本轮修复 MySQL 空列批量 INSERT 丢行，并纠正验收程序的 TIME 类型、INTERVAL 正号比较及
+预处理缓存生命周期。最终矩阵无清理错误；初轮句柄耗尽遗留的两张自有表已按报告名称清理，
+独立对象清单核对无剩余。原有固定表名 `tests/integration` 本轮只做编译检查；
+表中通过数来自随机对象的独立验收程序，旧集成套件和单独驱动复现不计入该统计。
+
+本地完整 JSON/诊断结果保存在忽略目录 `.cache/`：`live-final-20261023.json`、
+`live-profile5-20261023.json`、`driver-issues-20261023.log`、
+`java-comparison.log`、`live-cleanup-20261023.log`，均不含连接凭据。

@@ -274,16 +274,22 @@ func runScenario(s *scenario, run func(*scenario) error) (result caseResult) {
 			result.Status = statusFail
 			result.Message = "case panicked (raw panic omitted)"
 		}
+		recordCleanup := func(name string, err error) {
+			if err != nil {
+				result.Status = statusFail
+				result.CleanupErrors = append(result.CleanupErrors, name+": "+errorSummary(err))
+			}
+		}
+		// Each case uses fresh table names. Release cached handles before DROP needs another slot.
+		recordCleanup("statement cache", releasePreparedStatements(s.base))
 		for i := len(s.cleanups) - 1; i >= 0; i-- {
 			action := s.cleanups[i]
 			ctx, cancel := context.WithTimeout(context.Background(), s.cleanupTimeout)
 			err := runCleanup(action, s.base.WithContext(ctx))
 			cancel()
-			if err != nil {
-				result.Status = statusFail
-				result.CleanupErrors = append(result.CleanupErrors, action.name+": "+errorSummary(err))
-			}
+			recordCleanup(action.name, err)
 		}
+		recordCleanup("cleanup statement cache", releasePreparedStatements(s.base))
 		result.Columns, result.Indexes, result.Objects = s.columns, s.indexes, s.objects
 		result.Stage = s.stage
 		result.Duration = time.Since(start).String()
@@ -293,6 +299,23 @@ func runScenario(s *scenario, run func(*scenario) error) (result caseResult) {
 		result.Message = errorSummary(err)
 	}
 	return result
+}
+
+func releasePreparedStatements(db *gorm.DB) error {
+	prepared, ok := db.ConnPool.(*gorm.PreparedStmtDB)
+	if !ok {
+		return nil
+	}
+	prepared.Mux.Lock()
+	defer prepared.Mux.Unlock()
+	var errs []error
+	for _, key := range prepared.Stmts.Keys() {
+		if statement, ok := prepared.Stmts.Get(key); ok {
+			errs = append(errs, statement.Close())
+		}
+		prepared.Stmts.Delete(key)
+	}
+	return errors.Join(errs...)
 }
 
 func runCleanup(action cleanupAction, db *gorm.DB) (err error) {

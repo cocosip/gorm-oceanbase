@@ -61,6 +61,21 @@ func TestMySQLCreateResultContract(t *testing.T) {
 	}
 }
 
+func TestMySQLDefaultOnlyBatchRetainsEveryTuple(t *testing.T) {
+	type key struct{ ID uint }
+	for _, count := range []int{1, 3} {
+		db := openWithFakeDB(t)
+		rows := make([]key, count)
+		tx := db.Session(&gorm.Session{DryRun: true}).Create(&rows)
+		if tx.Error != nil {
+			t.Fatal(tx.Error)
+		}
+		if got := strings.Count(tx.Statement.SQL.String(), "()"); got != count {
+			t.Fatalf("rows=%d tuples=%d SQL=%s", count, got, tx.Statement.SQL.String())
+		}
+	}
+}
+
 func TestMySQLDropTableRestoresForeignKeyChecks(t *testing.T) {
 	ddlErr := errors.New("drop failed")
 	for _, original := range []string{"0", "1"} {
