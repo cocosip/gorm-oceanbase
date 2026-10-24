@@ -75,7 +75,8 @@ type Config struct {
 	// primary and default-valued fields).
 	DefaultStringSize uint
 	// DefaultDatetimePrecision is the datetime precision used when a field does
-	// not specify one. Nil defaults to 3.
+	// not specify one. Nil defaults to 3. MySQL mode only: Oracle mode always
+	// uses the Oracle TIMESTAMP default precision of 6 and ignores this value.
 	DefaultDatetimePrecision *int
 	// DisableDatetimePrecision omits datetime precision entirely.
 	DisableDatetimePrecision bool
