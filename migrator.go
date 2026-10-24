@@ -75,7 +75,10 @@ func (m *mysqlMigrator) MigrateColumnUnique(value interface{}, field *schema.Fie
 	return m.RunWithValue(value, func(stmt *gorm.Statement) error {
 		constraint := m.DB.NamingStrategy.UniqueName(stmt.Table, field.DBName)
 		if unique {
-			indexes, _ := queryTx.Migrator().GetIndexes(value)
+			indexes, err := queryTx.Migrator().GetIndexes(value)
+			if err != nil {
+				return err
+			}
 			for _, index := range indexes {
 				if uni, ok := index.Unique(); !ok || !uni {
 					continue
