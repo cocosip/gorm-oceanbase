@@ -45,17 +45,6 @@ func parseOBVersion(raw string) serverVersion {
 	return matchVersion(plainVersion.FindStringSubmatch(raw))
 }
 
-// parseCompatibleVersion parses a MySQL VERSION() fallback. Without an
-// OceanBase marker the value may describe a MySQL-compatible prefix, so it is
-// treated as unknown instead of assuming an OceanBase release.
-func parseCompatibleVersion(raw string) serverVersion {
-	raw = strings.TrimSpace(raw)
-	if !obMarker.MatchString(raw) {
-		return serverVersion{}
-	}
-	return matchVersion(obVersionExpr.FindStringSubmatch(raw))
-}
-
 func matchVersion(parts []string) serverVersion {
 	if len(parts) != 4 {
 		return serverVersion{}
@@ -80,11 +69,9 @@ type capabilities struct {
 
 // mysqlCapabilities maps OceanBase's MySQL mode onto client syntax gates.
 // OceanBase's MySQL mode reports the MySQL 5.7 compatibility profile, so
-// syntax introduced only in MySQL 8 stays disabled. Unknown versions keep the
-// same conservative gates; a verified release may relax a gate later.
-//
-// ponytail: MySQL 8-only syntax is always rewritten; flip a gate per verified
-// OceanBase release once the integration matrix has evidence.
+// syntax introduced only in MySQL 8 stays rewritten; the gates are
+// version-independent today. Flip a gate per verified OceanBase release once
+// the integration matrix has evidence.
 func mysqlCapabilities() capabilities {
 	return capabilities{
 		dontSupportRenameColumn:   true,

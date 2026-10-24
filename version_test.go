@@ -47,15 +47,6 @@ func TestParseOBVersion(t *testing.T) {
 	}
 }
 
-func TestParseCompatibleVersionRequiresMarker(t *testing.T) {
-	if v := parseCompatibleVersion("8.0.32"); v.valid {
-		t.Fatalf("a MySQL prefix without an OceanBase marker must stay unknown, got %+v", v)
-	}
-	if v := parseCompatibleVersion("5.7.25-OceanBase_CE-v4.2.1"); !v.valid || v.major != 4 {
-		t.Fatalf("marker version not parsed: %+v", v)
-	}
-}
-
 func TestMysqlCapabilitiesMatchMySQL57Profile(t *testing.T) {
 	caps := mysqlCapabilities()
 	if !caps.dontSupportRenameColumn || !caps.dontSupportForShareClause || !caps.dontSupportDropConstraint {
