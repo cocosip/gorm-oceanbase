@@ -3,7 +3,7 @@ module github.com/cocosip/gorm-oceanbase
 go 1.26.0
 
 require (
-	github.com/cocosip/go-oceanbase v0.1.5
+	github.com/cocosip/go-oceanbase v0.1.6
 	gorm.io/gorm v1.31.2
 )
 

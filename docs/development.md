@@ -6,9 +6,11 @@ current progress directly.
 **Current progress: 22 / 32 completed, 7 in progress, 3 not started, 0 blocked. Next: complete the
 remaining G22/G39 integration coverage and compatibility validation.**
 
-The current driver dependency is published `go-oceanbase v0.1.5`. Its MySQL time parameter binding
-truncates nanoseconds to microseconds; the dialect's column defaults and automatic timestamp policy
-remain unchanged. Live acceptance results below are historical and have not been rerun with v0.1.5.
+The current driver dependency is published `go-oceanbase v0.1.6`. With ParseTime enabled, Oracle
+zoned timestamp results now use `time.Time`; `TimestampTZ`/`TimestampLTZ` scanners also accept it.
+MySQL time parameter binding truncates nanoseconds to microseconds; the dialect's column defaults
+and automatic timestamp policy remain unchanged. Live acceptance results below are historical
+and have not been rerun with v0.1.6.
 
 **Latest live validation round (2026-10-24)**: the dependency was upgraded to published
 `go-oceanbase v0.1.4`, without a local replacement. The standalone `cmd/gorm-obtest` tool ran a
@@ -55,7 +57,7 @@ version does not justify broader compatibility claims.
 
 | ID | Task | Scope | Dependencies | Acceptance | Status |
 | --- | --- | --- | --- | --- | --- |
-| G01 | Initialize module | `go.mod`: module github.com/cocosip/gorm-oceanbase, go 1.26; pin development baselines `gorm.io/gorm@v1.31.2` (current latest) and `github.com/cocosip/go-oceanbase@v0.1.5` (remote module, no replace); earlier GORM support requires a version matrix | — | `go build ./...` passes | ✅ |
+| G01 | Initialize module | `go.mod`: module github.com/cocosip/gorm-oceanbase, go 1.26; pin development baselines `gorm.io/gorm@v1.31.2` (current latest) and `github.com/cocosip/go-oceanbase@v0.1.6` (remote module, no replace); earlier GORM support requires a version matrix | — | `go build ./...` passes | ✅ |
 | G02 | README skeleton | Project purpose, quick start matching design.md §3 entry points, documentation index | G01 | Review passes | ✅ |
 | G03 | CI skeleton | GitHub Actions: build, vet, offline tests, golangci-lint using existing .golangci.yml; add `go test -tags=integration ./tests/integration -run '^$'` after integration packages exist | G01 | Routine skeleton checks pass; integration compilation passes after G22/G39 exist; skips do not count as live acceptance | ✅ |
 

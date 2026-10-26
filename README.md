@@ -4,7 +4,7 @@ An OceanBase database driver for [GORM](https://gorm.io), supporting **MySQL com
 **Oracle compatibility mode**. It uses [go-oceanbase](https://github.com/cocosip/go-oceanbase)
 (the `database/sql` driver), with a single `Dialector` selecting the mode through a DSN or configuration.
 
-> Tested against OceanBase 4.4.2.2 on 2026-10-24 with go-oceanbase v0.1.4: all applicable cases in
+> Tested against OceanBase 4.4.2.2 on 2026-10-24: all applicable cases in
 > the supported column matrix passed for plain/prepared MySQL profile 8 and Oracle targets.
 > Native NCLOB and nested-table columns are excluded after independent Connector/J confirmation
 > of server rejection. See the
@@ -18,8 +18,9 @@ An OceanBase database driver for [GORM](https://gorm.io), supporting **MySQL com
 go get github.com/cocosip/gorm-oceanbase
 ```
 
-The development baseline is `gorm.io/gorm` v1.31.2 and `go-oceanbase` v0.1.5. Support for earlier GORM
-versions requires a separate version matrix before it can be claimed. The live results above used v0.1.4.
+The development baseline is `gorm.io/gorm` v1.31.2. Support for earlier GORM versions requires a
+separate version matrix before it can be claimed. Driver dependencies are managed in [go.mod](go.mod);
+the versions used for live validation are recorded in the [acceptance results](tests/acceptance/README.md).
 
 ## Quick start
 
@@ -77,10 +78,14 @@ Config.Mode (nonzero) > explicit DSN mode / nonzero DSNConfig.Mode > MySQL defau
   `compatibleMysqlVersion` > nonzero `DSNConfig` value > default **8**. Profile 5 truncates fractional
   seconds in TIME results; DATETIME/TIMESTAMP behavior must be verified separately for each profile.
 - Oracle mode does not inject a MySQL profile.
+- Oracle `TIMESTAMP WITH TIME ZONE` and `TIMESTAMP WITH LOCAL TIME ZONE`
+  results also use `time.Time` with ParseTime enabled. Zoned values retain their explicit offset;
+  local time zone values use the configured location. `TimestampTZ`/`TimestampLTZ` fields still scan
+  these results, but `time.Time` cannot preserve the original textual fractional-second scale.
 - MySQL `TIME` is a duration that can be negative or exceed 24 hours. Use a `string` field with an
   explicit `type:time(6)` tag. The underlying driver returns strings even with ParseTime enabled;
   these values cannot be treated as ordinary dates in `time.Time`.
-- Since go-oceanbase v0.1.5, MySQL `time.Time` parameters accept nanoseconds and truncate to
+- MySQL `time.Time` parameters accept nanoseconds and truncate to
   microseconds in both server preparation and client interpolation, without rounding into the next
   second. Columns can further reduce precision according to server rules. Oracle binding retains
   nanoseconds. The dialect passes user timestamps through without pre-truncation.
