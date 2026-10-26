@@ -3,8 +3,8 @@
 ## Current status: v0.1.4 verified on 2026-10-24
 
 The published go-oceanbase v0.1.4 fixes the reproduced float binding failure on
-OceanBase 4.4.2.2. This consumer now depends on v0.1.4 through go.mod/go.sum;
-the earlier local-driver workspace was disabled for all current checks.
+OceanBase 4.4.2.2. That verification used v0.1.4 through go.mod/go.sum;
+the earlier local-driver workspace was disabled for those checks.
 No driver implementation changes were made in this consumer verification.
 
 - TestOracleBinaryDoubleRange passes in ordinary and explicit prepared paths,

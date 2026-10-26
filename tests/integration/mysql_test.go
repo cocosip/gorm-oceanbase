@@ -133,26 +133,42 @@ type mysqlPrecisionRow struct {
 
 func TestMySQLDatetimePrecisionRoundTrip(t *testing.T) {
 	db := openMySQL(t)
+	pool, err := db.DB()
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = pool.Close() })
 	if err := db.AutoMigrate(&mysqlPrecisionRow{}); err != nil {
 		t.Fatalf("AutoMigrate: %v", err)
 	}
 	t.Cleanup(func() { _ = db.Migrator().DropTable(&mysqlPrecisionRow{}) })
 
-	stamp := time.Date(2024, 6, 1, 12, 30, 45, 123456789, time.UTC)
-	row := mysqlPrecisionRow{Milli: stamp, Micro: stamp}
-	if err := db.Create(&row).Error; err != nil {
-		t.Fatalf("Create: %v", err)
-	}
+	for _, prepared := range []bool{false, true} {
+		t.Run(fmt.Sprintf("prepared=%t", prepared), func(t *testing.T) {
+			tx := db.Session(&gorm.Session{PrepareStmt: prepared})
+			if prepared {
+				t.Cleanup(tx.ConnPool.(*gorm.PreparedStmtDB).Close)
+			}
+			milli := time.Date(2024, 6, 1, 12, 30, 45, 123456789, time.UTC)
+			for _, nanos := range []int{123456789, 999999999} {
+				stamp := time.Date(2024, 6, 1, 12, 30, 45, nanos, time.UTC)
+				row := mysqlPrecisionRow{Milli: milli, Micro: stamp}
+				if err := tx.Create(&row).Error; err != nil {
+					t.Fatalf("Create (%d ns): %v", nanos, err)
+				}
 
-	var found mysqlPrecisionRow
-	if err := db.First(&found, row.ID).Error; err != nil {
-		t.Fatalf("First: %v", err)
-	}
-	if !found.Milli.Equal(stamp.Truncate(time.Millisecond)) {
-		t.Fatalf("datetime(3) = %v, want %v", found.Milli, stamp.Truncate(time.Millisecond))
-	}
-	if !found.Micro.Equal(stamp.Truncate(time.Microsecond)) {
-		t.Fatalf("datetime(6) = %v, want %v", found.Micro, stamp.Truncate(time.Microsecond))
+				var found mysqlPrecisionRow
+				if err := tx.First(&found, row.ID).Error; err != nil {
+					t.Fatalf("First: %v", err)
+				}
+				if !found.Milli.Equal(milli.Truncate(time.Millisecond)) {
+					t.Fatalf("datetime(3) = %v, want %v", found.Milli, milli.Truncate(time.Millisecond))
+				}
+				if !found.Micro.Equal(stamp.Truncate(time.Microsecond)) {
+					t.Fatalf("datetime(6) = %v, want %v", found.Micro, stamp.Truncate(time.Microsecond))
+				}
+			}
+		})
 	}
 }
 

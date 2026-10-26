@@ -7,7 +7,7 @@ See [development.md](development.md) for implementation and acceptance status.
 - Module path: `github.com/cocosip/gorm-oceanbase`; package name: `oceanbase`
 - Development baseline: `gorm.io/gorm` v1.31.2 (the current latest version); v1.25+ is a compatibility
   target, with support claims requiring a completed version matrix
-- Driver baseline: `github.com/cocosip/go-oceanbase` **v0.1.4**
+- Driver baseline: `github.com/cocosip/go-oceanbase` **v0.1.5**
 - Go version: 1.26, as required by the underlying driver
 
 ---

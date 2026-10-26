@@ -18,8 +18,8 @@ An OceanBase database driver for [GORM](https://gorm.io), supporting **MySQL com
 go get github.com/cocosip/gorm-oceanbase
 ```
 
-The development baseline is `gorm.io/gorm` v1.31.2. Support for earlier GORM versions requires a separate
-version matrix before it can be claimed.
+The development baseline is `gorm.io/gorm` v1.31.2 and `go-oceanbase` v0.1.5. Support for earlier GORM
+versions requires a separate version matrix before it can be claimed. The live results above used v0.1.4.
 
 ## Quick start
 
@@ -80,6 +80,10 @@ Config.Mode (nonzero) > explicit DSN mode / nonzero DSNConfig.Mode > MySQL defau
 - MySQL `TIME` is a duration that can be negative or exceed 24 hours. Use a `string` field with an
   explicit `type:time(6)` tag. The underlying driver returns strings even with ParseTime enabled;
   these values cannot be treated as ordinary dates in `time.Time`.
+- Since go-oceanbase v0.1.5, MySQL `time.Time` parameters accept nanoseconds and truncate to
+  microseconds in both server preparation and client interpolation, without rounding into the next
+  second. Columns can further reduce precision according to server rules. Oracle binding retains
+  nanoseconds. The dialect passes user timestamps through without pre-truncation.
 
 ## String and time type defaults
 
