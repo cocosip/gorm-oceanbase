@@ -2,9 +2,9 @@ name: CI
 
 on:
   push:
-    branches: [master, main, develop]
-    tags: ['v*']
+    branches: [master, main]
   pull_request:
+    branches: [master, main]
   workflow_dispatch:
 
 permissions:
@@ -19,65 +19,57 @@ env:
 
 jobs:
   test:
-    name: Test (${{ matrix.os }}, Go ${{ matrix.go }})
+    name: Test (${{ matrix.os }})
     runs-on: ${{ matrix.os }}
     timeout-minutes: 20
     strategy:
       fail-fast: false
       matrix:
         os: [ubuntu-latest, windows-latest, macos-latest]
-        go: ['1.26.x']
     steps:
       - uses: actions/checkout@v7
       - uses: actions/setup-go@v7
         with:
-          go-version: ${{ matrix.go }}
+          go-version: '1.27'
           cache: true
-      - name: Show toolchain
-        run: go version
       - name: Download dependencies
         run: go mod download
       - name: Verify dependencies
+        if: matrix.os == 'ubuntu-latest'
         run: go mod verify
       - name: Build packages
+        if: matrix.os == 'ubuntu-latest'
         run: go build ./...
-      - name: Vet
-        run: go vet ./...
       - name: Compile integration tests without a database
+        if: matrix.os == 'ubuntu-latest'
         run: go test -tags=integration ./... -run '^$' -timeout 1m
-      - name: Unit tests with coverage
-        # The dialect is pure Go; CGO_ENABLED=0 keeps that promise checked on
-        # every runner. The coverprofile value stays quoted because PowerShell
-        # splits an unquoted -flag=value.ext at the dot.
-        run: go test "-coverprofile=coverage.out" -covermode=atomic ./... -count=1 -timeout 5m
+      - name: Unit tests without CGO
+        run: go test ./... -count=1 -timeout 5m
         env:
           CGO_ENABLED: '0'
+      - name: Race tests with coverage
+        if: matrix.os == 'ubuntu-latest'
+        run: go test -race -coverprofile=coverage.out -covermode=atomic ./... -count=1 -timeout 5m
       - name: Upload coverage
-        if: ${{ !cancelled() }}
+        if: matrix.os == 'ubuntu-latest'
         uses: actions/upload-artifact@v7
         with:
-          name: coverage-${{ matrix.os }}-go${{ matrix.go }}
+          name: coverage
           path: coverage.out
           if-no-files-found: warn
           retention-days: 14
 
   lint:
-    name: Lint (${{ matrix.os }}, Go ${{ matrix.go }})
-    runs-on: ${{ matrix.os }}
+    name: Lint
+    runs-on: ubuntu-latest
     timeout-minutes: 15
-    strategy:
-      fail-fast: false
-      matrix:
-        os: [ubuntu-latest, windows-latest]
-        go: ['1.26.x']
     steps:
       - uses: actions/checkout@v7
       - uses: actions/setup-go@v7
         with:
-          go-version: ${{ matrix.go }}
+          go-version: '1.27'
           cache: true
       - name: Check formatting and module files
-        if: runner.os == 'Linux'
         shell: bash
         run: |
           files=$(git ls-files -z '*.go' | xargs -0 gofmt -l)
@@ -87,15 +79,8 @@ jobs:
           fi
           go mod tidy -diff
       - name: Check GitHub Actions workflows
-        if: runner.os == 'Linux'
         run: go run github.com/rhysd/actionlint/cmd/actionlint@v1.7.12 -color
       - uses: golangci/golangci-lint-action@v9
         with:
-          # v2.14.0 matches the development workstation's golangci-lint; keep
-          # both in sync so local and CI report identical findings.
           version: v2.14.0
-          args: --timeout=10m
-      - name: Lint integration test sources without a database
-        # Same pinned binary as above; the integration tag pulls the two
-        # integration test files into one package for cross-file linters.
-        run: golangci-lint run --build-tags=integration ./...
+          args: --timeout=10m --build-tags=integration
